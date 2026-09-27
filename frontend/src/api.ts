@@ -579,6 +579,7 @@ export type WorkspaceSearchHit = {
   path: string;
   score?: number;
   snippet?: string;
+  kind?: "file" | "dir";
 };
 
 export async function searchWorkspaceFiles(
@@ -591,6 +592,41 @@ export async function searchWorkspaceFiles(
     error?: string;
   }>(response);
   return data.results ?? [];
+}
+
+export type WorkspaceTreeEntry = {
+  path: string;
+  kind: "file" | "dir";
+};
+
+export async function fetchWorkspaceTree(
+  prefix = "",
+): Promise<WorkspaceTreeEntry[]> {
+  const q = encodeURIComponent(prefix);
+  const response = await fetch(
+    `${API_BASE}/api/workspace/tree/?prefix=${q}`,
+  );
+  const data = await parseJson<{
+    entries?: WorkspaceTreeEntry[];
+    error?: string;
+  }>(response);
+  return data.entries ?? [];
+}
+
+export type WorkspaceFilePayload = {
+  path: string;
+  content: string;
+  chars?: number;
+  truncated?: boolean;
+  error?: string;
+};
+
+export async function readWorkspaceFile(
+  path: string,
+): Promise<WorkspaceFilePayload> {
+  const q = encodeURIComponent(path);
+  const response = await fetch(`${API_BASE}/api/workspace/file/?path=${q}`);
+  return parseJson<WorkspaceFilePayload>(response);
 }
 
 export type SandboxResult = {

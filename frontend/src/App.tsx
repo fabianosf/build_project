@@ -45,6 +45,7 @@ import {
 import { FOLDER_MAX_FILES, pickFolderFiles } from "./folderPicker";
 import { parseDiffBlocks } from "./diffBlocks";
 import { DiffPanel } from "./DiffPanel";
+import { WorkspacePanel } from "./WorkspacePanel";
 import { REQUEST_EXAMPLES } from "./requestExamples";
 import { buildCommitSuggestion } from "./commitSuggest";
 
@@ -241,6 +242,7 @@ export default function App() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [showCatalog, setShowCatalog] = useState(false);
+  const [catalogFilter, setCatalogFilter] = useState("");
 
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -765,6 +767,7 @@ export default function App() {
     setActivationInfo(null);
     setActivatedDoc(null);
     setShowCatalog(false);
+    setCatalogFilter("");
     setCopyNotice(null);
     setChatMessages([]);
     setChatInput("");
@@ -1321,8 +1324,13 @@ export default function App() {
   }
 
   function pickContextPath(path: string) {
+    const trimmed = path.trim().replace(/\\/g, "/");
+    const normalized = trimmed.endsWith("/")
+      ? `${trimmed.replace(/\/+$/, "")}/`
+      : trimmed.replace(/\/+$/, "");
+    if (!normalized) return;
     setContextPaths((prev) =>
-      prev.includes(path) ? prev : [...prev, path].slice(0, 12),
+      prev.includes(normalized) ? prev : [...prev, normalized].slice(0, 12),
     );
     setUseWorkspaceOn(true);
     setChatInput((prev) => prev.replace(/(^|\s)@[^\s@]*$/, "$1").trimEnd());
@@ -1455,6 +1463,36 @@ export default function App() {
     ? data.categories.reduce((n, c) => n + c.fragments.length, 0)
     : 0;
 
+  const filteredCategories = useMemo(() => {
+    if (!data) return [];
+    const q = catalogFilter.trim().toLowerCase();
+    return data.categories
+      .map((section) => ({
+        ...section,
+        fragments: section.fragments.filter((f) => {
+          if (!q) return true;
+          const hay = [
+            f.name,
+            f.id,
+            f.filename,
+            f.function,
+            f.category,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          return hay.includes(q);
+        }),
+      }))
+      .filter((section) => section.fragments.length > 0);
+  }, [data, catalogFilter]);
+
+  function handleCatalogSelect(id: string) {
+    setSelectedId(id);
+    setSuggestError(null);
+    setPipelineError(null);
+  }
+
   return (
     <div className="page">
       <header className="hero">
@@ -1483,6 +1521,18 @@ export default function App() {
                 ? `Workspace · ${workspaceMeta.root_name ?? "on"}`
                 : "Workspace · off"}
             </span>
+            <button
+              type="button"
+              className="btn-ghost"
+              aria-expanded={showCatalog}
+              aria-controls="catalog-drawer"
+              onClick={() => setShowCatalog((v) => !v)}
+              title="Listar todos os fragmentos/especialistas"
+            >
+              {showCatalog
+                ? "Ocultar especialistas"
+                : `Especialistas (${fragmentCount || "…"})`}
+            </button>
             <button
               type="button"
               className="btn-ghost"
@@ -1643,6 +1693,67 @@ export default function App() {
         ))}
       </nav>
 
+      {showCatalog ? (
+        <section
+          id="catalog-drawer"
+          className="catalog-drawer catalog-drawer-global"
+          aria-label="Catálogo de especialistas"
+        >
+          <div className="catalog-drawer-head">
+            <h2>Especialistas disponíveis</h2>
+            <button
+              type="button"
+              className="btn-link"
+              onClick={() => setShowCatalog(false)}
+            >
+              Fechar
+            </button>
+          </div>
+          <p className="meta-line">
+            {fragmentCount} fragmentos no catálogo. Filtre e escolha um para
+            usar (depois Preparar).
+          </p>
+          <label htmlFor="catalog-filter" className="field-label">
+            Filtrar
+          </label>
+          <input
+            id="catalog-filter"
+            type="search"
+            className="catalog-filter"
+            value={catalogFilter}
+            onChange={(e) => setCatalogFilter(e.target.value)}
+            placeholder="Nome, id, arquivo ou função…"
+            autoComplete="off"
+          />
+          {filteredCategories.length === 0 ? (
+            <p className="status">
+              {loading
+                ? "Carregando catálogo…"
+                : "Nenhum especialista corresponde ao filtro."}
+            </p>
+          ) : (
+            filteredCategories.map((section: CategoryGroup) => (
+              <section key={section.name} className="category-section">
+                <div className="section-head">
+                  <h3>{section.name}</h3>
+                  <span className="count">{section.fragments.length}</span>
+                </div>
+                <div className="grid">
+                  {section.fragments.map((fragment) => (
+                    <FragmentCard
+                      key={fragment.id}
+                      fragment={fragment}
+                      selected={selectedId === fragment.id}
+                      onSelect={handleCatalogSelect}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))
+          )}
+        </section>
+      ) : null}
+
       {uiStep === 1 ? (
         <section className="step-panel request-panel">
           <form onSubmit={handleSuggest}>
@@ -1789,8 +1900,58 @@ export default function App() {
               >
                 Pasta local
               </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setShowCatalog((v) => !v)}
+              >
+                {showCatalog ? "Ocultar catálogo" : "Listar especialistas"}
+              </button>
             </div>
           </form>
+          {selected ? (
+            <div className="selection-banner" aria-live="polite">
+              <p>
+                Selecionado: <strong>{selected.name}</strong>
+                {selected.filename ? (
+                  <>
+                    {" "}
+                    · <code>{selected.filename}</code>
+                  </>
+                ) : null}
+              </p>
+              {selectedPrereqs.length > 0 ? (
+                <div className="prereq-warning" role="status">
+                  {selectedPrereqs.map((p) => (
+                    <p key={p.code}>{p.message}</p>
+                  ))}
+                </div>
+              ) : null}
+              <div className="form-actions form-actions-primary">
+                <button
+                  type="button"
+                  disabled={
+                    pipelineBusy ||
+                    !selectedId ||
+                    (!requestText.trim() && pendingAttachments.length === 0)
+                  }
+                  onClick={() => void handleForge()}
+                  title={
+                    !requestText.trim() && pendingAttachments.length === 0
+                      ? "Escreva um pedido acima antes de preparar"
+                      : "Preparar conversa com este especialista"
+                  }
+                >
+                  {pipelineBusy ? "Preparando…" : "Preparar com este"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {pipelineError && uiStep === 1 ? (
+            <p className="status error" role="alert">
+              {pipelineError}
+            </p>
+          ) : null}
           {suggestError ? (
             <p className="status error" role="alert">
               {suggestError}
@@ -1882,7 +2043,7 @@ export default function App() {
                     className={`suggestion-item${
                       selectedId === s.id ? " suggestion-selected" : ""
                     }`}
-                    onClick={() => setSelectedId(s.id)}
+                    onClick={() => handleCatalogSelect(s.id)}
                   >
                     <div className="suggestion-top">
                       <strong>{s.name}</strong>
@@ -2004,30 +2165,6 @@ export default function App() {
               <p className="cost-note">
                 Sugestão ambígua pode usar +1 chamada; preparar+gerar = até 2.
               </p>
-            </div>
-          ) : null}
-
-          {showCatalog ? (
-            <div className="catalog-drawer">
-              <h3>Todos os especialistas</h3>
-              {data?.categories.map((section: CategoryGroup) => (
-                <section key={section.name} className="category-section">
-                  <div className="section-head">
-                    <h2>{section.name}</h2>
-                    <span className="count">{section.fragments.length}</span>
-                  </div>
-                  <div className="grid">
-                    {section.fragments.map((fragment) => (
-                      <FragmentCard
-                        key={fragment.id}
-                        fragment={fragment}
-                        selected={selectedId === fragment.id}
-                        onSelect={setSelectedId}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ))}
             </div>
           ) : null}
         </section>
@@ -2403,10 +2540,19 @@ export default function App() {
               </div>
 
               <form className="chat-composer chat-composer-sticky" onSubmit={handleChatSend}>
+                {workspaceMeta?.enabled ? (
+                  <WorkspacePanel
+                    enabled
+                    onAddContext={(path) => pickContextPath(path)}
+                  />
+                ) : null}
                 <label htmlFor="chat-input" className="field-label">
                   Continue perguntando
                   {workspaceMeta?.enabled ? (
-                    <span className="field-hint"> · digite @ para arquivos do workspace</span>
+                    <span className="field-hint">
+                      {" "}
+                      · @arquivo ou @pasta/ (contexto do workspace)
+                    </span>
                   ) : null}
                 </label>
                 <div className="composer-input-wrap">
@@ -2433,32 +2579,48 @@ export default function App() {
                         }
                       }
                     }}
-                    placeholder="Sua pergunta… @arquivo · Enter envia · Shift+Enter nova linha"
+                    placeholder="Sua pergunta… @backend/ ou @arquivo.py · Enter envia"
                   />
                   {atOpen && workspaceMeta?.enabled ? (
-                    <ul className="at-file-menu" role="listbox" aria-label="Arquivos do workspace">
+                    <ul className="at-file-menu" role="listbox" aria-label="Arquivos e pastas do workspace">
                       {atHits.length === 0 ? (
                         <li className="at-file-empty">Buscando…</li>
                       ) : (
-                        atHits.map((hit) => (
-                          <li key={hit.path}>
-                            <button
-                              type="button"
-                              onClick={() => pickContextPath(hit.path)}
-                            >
-                              {hit.path}
-                            </button>
-                          </li>
-                        ))
+                        atHits.map((hit) => {
+                          const isDir =
+                            hit.kind === "dir" || hit.path.endsWith("/");
+                          return (
+                            <li key={hit.path}>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  pickContextPath(
+                                    isDir
+                                      ? hit.path.replace(/\/?$/, "/")
+                                      : hit.path,
+                                  )
+                                }
+                              >
+                                <span className="workspace-kind">
+                                  {isDir ? "dir" : "file"}
+                                </span>{" "}
+                                {hit.path}
+                              </button>
+                            </li>
+                          );
+                        })
                       )}
                     </ul>
                   ) : null}
                 </div>
                 {contextPaths.length > 0 ? (
-                  <ul className="attach-chips context-chips" aria-label="Contexto @arquivo">
+                  <ul className="attach-chips context-chips" aria-label="Contexto @arquivo/@pasta">
                     {contextPaths.map((path) => (
                       <li key={path}>
-                        <span>@{path}</span>
+                        <span>
+                          @{path}
+                          {path.endsWith("/") ? " (pasta)" : ""}
+                        </span>
                         <button
                           type="button"
                           className="btn-link"

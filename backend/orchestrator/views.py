@@ -31,6 +31,7 @@ from orchestrator.services.selection_service import suggest_specialists
 from orchestrator.services.workspace_service import (
     WorkspaceError,
     apply_patches,
+    list_dir_prefixes as workspace_list_dirs,
     list_tree as workspace_list_tree,
     read_file as workspace_read_file,
     search_files as workspace_search_files,
@@ -463,19 +464,65 @@ class WorkspaceSearchView(APIView):
     def get(self, request: Request) -> Response:
         q = (request.query_params.get("q") or "").strip()
         try:
+            dirs = workspace_list_dirs(query=q, limit=16)
+            dir_hits = [
+                {
+                    "path": f"{d}/",
+                    "score": 50.0,
+                    "snippet": "pasta",
+                    "kind": "dir",
+                }
+                for d in dirs
+            ]
             if not q:
                 paths = workspace_list_tree(limit=40)
-                hits = [
-                    {"path": p, "score": 0.0, "snippet": ""} for p in paths
+                file_hits = [
+                    {
+                        "path": p,
+                        "score": 0.0,
+                        "snippet": "",
+                        "kind": "file",
+                    }
+                    for p in paths
                 ]
             else:
-                hits = workspace_search_files(q)
+                file_hits = [
+                    {**h, "kind": "file"} for h in workspace_search_files(q)
+                ]
+            # Prefer matching folders first for @pasta UX
+            hits = dir_hits + file_hits
         except WorkspaceError as exc:
             return Response(
                 {"error": str(exc)},
                 status=exc.http_status,
             )
-        return Response({"query": q, "results": hits})
+        return Response({"query": q, "results": hits[:40]})
+
+
+class WorkspaceTreeView(APIView):
+    authentication_classes: list = []
+    permission_classes: list = []
+    http_method_names = ["get", "head", "options"]
+
+    def get(self, request: Request) -> Response:
+        prefix = (request.query_params.get("prefix") or "").strip().strip("/")
+        try:
+            files = workspace_list_tree(limit=200)
+            dirs = workspace_list_dirs(query=prefix, limit=80)
+        except WorkspaceError as exc:
+            return Response(
+                {"error": str(exc)},
+                status=exc.http_status,
+            )
+        if prefix:
+            pref = prefix + "/"
+            files = [p for p in files if p.startswith(pref)]
+            dirs = [d for d in dirs if d == prefix or d.startswith(pref)]
+        entries = (
+            [{"path": f"{d}/", "kind": "dir"} for d in dirs[:60]]
+            + [{"path": p, "kind": "file"} for p in files[:120]]
+        )
+        return Response({"prefix": prefix, "entries": entries})
 
 
 class WorkspaceApplyDiffView(APIView):

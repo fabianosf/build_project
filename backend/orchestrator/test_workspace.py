@@ -142,6 +142,46 @@ class WorkspaceChatInjectTests(SimpleTestCase):
                 self.assertIn("PINNED", blob)
                 self.assertIn("pinned.ts", blob)
 
+    def test_prepare_chat_context_folder(self) -> None:
+        import tempfile
+
+        from orchestrator.services.workspace_service import expand_context_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pkg").mkdir()
+            (root / "pkg" / "a.py").write_text("A = 1\n", encoding="utf-8")
+            (root / "pkg" / "b.py").write_text("B = 2\n", encoding="utf-8")
+            (root / "other.py").write_text("Z = 0\n", encoding="utf-8")
+            with override_settings(
+                WORKSPACE_ROOT=str(root),
+                WORKSPACE_SEARCH_TOP_K=4,
+                WORKSPACE_MAX_CONTEXT_CHARS=8000,
+            ):
+                hits = expand_context_paths(["pkg/"])
+                paths = {h["path"] for h in hits}
+                self.assertIn("pkg/a.py", paths)
+                self.assertIn("pkg/b.py", paths)
+                self.assertNotIn("other.py", paths)
+
+                fid = FRAGMENTS[0]["id"]
+                prepared = prepare_chat(
+                    fid,
+                    "Revise a pasta pkg",
+                    [],
+                    [],
+                    use_workspace=True,
+                    context_paths=["pkg/"],
+                )
+                self.assertTrue(prepared["workspace_used"])
+                blob = "\n".join(
+                    m["content"] if isinstance(m["content"], str) else ""
+                    for m in prepared["messages"]
+                    if m["role"] == "system"
+                )
+                self.assertIn("A = 1", blob)
+                self.assertIn("pkg/a.py", blob)
+
 
 class WorkspaceMultiApplyTests(SimpleTestCase):
     """Smoke: multi-file patches (DiffPanel → apply-diff contract)."""

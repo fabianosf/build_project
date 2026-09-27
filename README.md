@@ -118,6 +118,16 @@ LLM_MODEL=openai/gpt-oss-20b
 
 Reinicie o `runserver` após mudar o `.env`. O badge **LLM · modelo** no topo da UI vem de `GET /api/health/` (`llm.model`, `llm.base_host`). Sem as três variáveis (`BASE_URL`, `API_KEY`, `MODEL`), a API responde em `mode: "preview"` com `ai_executed: false` (sem cobrança).
 
+Trocar Groq por **ChatGPT/OpenAI** (chave `sk-…` + plano/créditos) **não deixa o código mais enxuto** — a app já usa o mesmo adapter OpenAI-compatible. O que melhora é qualidade, cota e estabilidade do modelo. Com plano pago você pode subir `LLM_MAX_FRAGMENT_CHARS` (ex.: `24000`) se quiser mais contexto do `.md`; o restante (agente, workspace, diffs, confirmação humana) permanece igual.
+
+### Chave paga ajuda? Gasta menos tokens?
+
+- **Ajuda mais na qualidade/estabilidade** (menos 429, modelos consistentes como `gpt-4o-mini`), não porque a app muda.
+- **Não gasta menos tokens automaticamente.** Token ≈ tamanho do prompt + da resposta. A chave paga não comprime o pedido. Mesmo texto ≈ mesmos tokens de entrada; modelo mais verboso pode **aumentar** a saída; subir `LLM_MAX_FRAGMENT_CHARS` ou `@pasta/` grande **aumenta** a entrada.
+- **Dinheiro ≠ tokens:** custo em US$ = tokens × preço do modelo. `gpt-4o-mini` costuma ser bom custo/benefício; modelos “flagship” cobram mais pelo mesmo volume.
+
+Para gastar menos de verdade (qualquer provedor): pedidos curtos; poucos anexos; `@arquivo`/`@pasta/` pontual; histórico curto (a UI já limita turnos); `LLM_MAX_FRAGMENT_CHARS` razoável (8000–16000); preferir modelo barato para tarefas simples.
+
 ### Custo aproximado por turno
 
 O app **não** calcula preço em dinheiro (varia por provedor). No chat, após cada resposta, aparece uma estimativa:
@@ -182,7 +192,7 @@ No chat (e no pedido), marque **Buscar na web** para injetar resultados externos
 WORKSPACE_ROOT=/caminho/absoluto/do/seu/projeto
 ```
 
-Reinicie o backend. O badge **Workspace · nome** aparece no topo; se estiver off, um aviso no hero orienta o `WORKSPACE_ROOT`. O toggle **Usar workspace** injeta arquivos relevantes do disco no turno. No chat, digite **`@`** para escolher arquivos (chips de contexto). No painel de diffs, **Aplicar no workspace** grava patches após confirmação (cria `.bak`) e oferece **Verificar agora**. Paths sensíveis (`.env`, chaves) são bloqueados.
+Reinicie o backend. O badge **Workspace · nome** aparece no topo; se estiver off, um aviso no hero orienta o `WORKSPACE_ROOT`. O toggle **Usar workspace** injeta arquivos relevantes do disco no turno. No chat: digite **`@`** para **arquivo** ou **pasta/** (ex.: `@backend/`); há um painel de árvore com preview só leitura e botão **+@**. Pastas expandem até 8 ficheiros no contexto. No painel de diffs, **Aplicar** grava patches após confirmação (cria `.bak`) e oferece **Verificar agora**. Paths sensíveis (`.env`, chaves) são bloqueados.
 
 **Verificação**: com workspace ativo, a barra **Verificar** no chat roda receitas allowlist (`pytest`, `manage.py test/check`, `compileall`, `npm test/build`) com timeout (`WORKSPACE_RUN_TIMEOUT_SEC`). O log aparece na thread; **Enviar log ao especialista** cola no composer. Sem shell livre.
 
@@ -193,6 +203,8 @@ Reinicie o backend. O badge **Workspace · nome** aparece no topo; se estiver of
 ## Fluxo na UI
 
 1 Pedido (exemplos + anexos/pasta) → 2 Sugestões → 3 Especialista → 4 Prompt Forger → 5 Revisão → 6 Resposta (chat + agente + Git + verificação + painel de diffs).
+
+No topo, **Especialistas (N)** abre o catálogo completo (filtro por nome/id/arquivo). Dá para escolher à mão no passo Pedido e clicar **Preparar com este**, sem depender só da sugestão automática.
 
 Exemplos preenchíveis, chips de stack/seção/arquivo, aviso de até 2 chamadas (sem preço monetário inventado), copiar draft/resposta. Sem histórico sensível em localStorage por padrão.
 

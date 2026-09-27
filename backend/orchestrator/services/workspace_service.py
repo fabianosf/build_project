@@ -220,6 +220,95 @@ def list_tree(*, limit: int = 80) -> list[str]:
     return out
 
 
+def path_is_dir(rel: str) -> bool:
+    """True if rel resolves to a directory under WORKSPACE_ROOT."""
+    cleaned = (rel or "").replace("\\", "/").strip().strip("/")
+    if not cleaned:
+        return False
+    root = get_workspace_root()
+    if root is None:
+        return False
+    try:
+        path = resolve_safe_path(cleaned, for_write=False)
+    except WorkspaceError:
+        return False
+    return path.is_dir()
+
+
+def list_dir_prefixes(*, query: str = "", limit: int = 40) -> list[str]:
+    """Unique directory prefixes derived from code files (for @pasta picker)."""
+    q = (query or "").casefold().strip().strip("/")
+    dirs: set[str] = set()
+    for rel in list_tree(limit=500):
+        parts = rel.split("/")
+        for i in range(len(parts) - 1):
+            d = "/".join(parts[: i + 1])
+            if q and q not in d.casefold():
+                continue
+            dirs.add(d)
+    return sorted(dirs)[: max(1, limit)]
+
+
+def expand_context_paths(
+    paths: list[str] | None,
+    *,
+    max_files: int = 16,
+    per_dir: int = 8,
+) -> list[dict[str, Any]]:
+    """
+    Expand @file / @pasta refs into workspace hit dicts.
+    Trailing slash or real directory → up to per_dir files under that prefix.
+    """
+    if not paths:
+        return []
+    hits: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in paths:
+        if not isinstance(raw, str):
+            continue
+        text = raw.strip().replace("\\", "/")
+        if not text:
+            continue
+        want_dir = text.endswith("/")
+        cleaned = text.strip("/")
+        if not cleaned:
+            continue
+        treat_as_dir = want_dir or path_is_dir(cleaned)
+        if treat_as_dir:
+            prefix = cleaned
+            pref = prefix + "/"
+            matched = [
+                p
+                for p in list_tree(limit=500)
+                if p.startswith(pref)
+            ]
+            n = 0
+            for p in matched:
+                if p in seen:
+                    continue
+                seen.add(p)
+                hits.append(
+                    {
+                        "path": p,
+                        "score": 999.0,
+                        "snippet": f"(pasta @{prefix}/)",
+                    }
+                )
+                n += 1
+                if n >= per_dir or len(hits) >= max_files:
+                    break
+            if len(hits) >= max_files:
+                return hits
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        hits.append({"path": cleaned, "score": 999.0, "snippet": ""})
+        if len(hits) >= max_files:
+            return hits
+    return hits
+
+
 def read_file(rel: str, *, max_chars: int | None = None) -> dict[str, Any]:
     path = resolve_safe_path(rel, for_write=False)
     if not path.is_file():

@@ -1,4 +1,8 @@
-"""Resolve LLM provider from Django settings / environment."""
+"""Resolve LLM provider from Django settings / environment.
+
+Uses OpenAICompatibleProvider for any OpenAI-style base URL, including
+https://api.openai.com/v1 (ChatGPT API) and Groq's openai/v1 endpoint.
+"""
 
 from __future__ import annotations
 

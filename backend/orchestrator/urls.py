@@ -15,6 +15,7 @@ from orchestrator.views import (
     WorkspaceRunView,
     WorkspaceSearchView,
     WorkspaceStatusView,
+    WorkspaceTreeView,
 )
 
 urlpatterns = [
@@ -30,6 +31,7 @@ urlpatterns = [
     path("workspace/", WorkspaceStatusView.as_view(), name="workspace-status"),
     path("workspace/file/", WorkspaceFileView.as_view(), name="workspace-file"),
     path("workspace/search/", WorkspaceSearchView.as_view(), name="workspace-search"),
+    path("workspace/tree/", WorkspaceTreeView.as_view(), name="workspace-tree"),
     path(
         "workspace/apply-diff/",
         WorkspaceApplyDiffView.as_view(),

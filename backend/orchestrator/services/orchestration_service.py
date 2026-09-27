@@ -49,6 +49,7 @@ from orchestrator.services.web_search_service import (
     web_search_enabled,
 )
 from orchestrator.services.workspace_service import (
+    expand_context_paths,
     format_workspace_context,
     search_files as workspace_search_files,
     workspace_enabled,
@@ -608,16 +609,12 @@ def prepare_chat(
                 "Workspace desligado (defina WORKSPACE_ROOT no .env)."
             ]
         else:
-            hits: list[dict[str, Any]] = []
-            seen: set[str] = set()
-            for raw in (context_paths or [])[:12]:
-                if not isinstance(raw, str):
-                    continue
-                path = raw.strip().replace("\\", "/")
-                if not path or path in seen:
-                    continue
-                seen.add(path)
-                hits.append({"path": path, "score": 999.0, "snippet": ""})
+            hits: list[dict[str, Any]] = expand_context_paths(
+                (context_paths or [])[:12]
+            )
+            seen: set[str] = {
+                (h.get("path") or "").replace("\\", "/") for h in hits if h.get("path")
+            }
             if msg:
                 for hit in workspace_search_files(msg):
                     p = (hit.get("path") or "").replace("\\", "/")
