@@ -221,6 +221,8 @@ Reinicie o backend. O badge **Workspace · nome** aparece no topo; se estiver of
 
 **Compactação de contexto**: se o prompt do turno ultrapassar `CONTEXT_COMPACT_THRESHOLD_CHARS`, o backend reduz **histórico e anexos** (via `context_compact.py`). O pedido atual e o fragmento escolhido não são cortados por essa política. Tamanhos before/after ficam na telemetria local (`historyStore`).
 
+**Resumo de telemetria**: exporte o JSON de `localStorage` (`orquestrador.history.v2`) para um arquivo e rode `python manage.py summarize_session_telemetry caminho/history.json` (no diretório `backend/`) para ver tarefas, taxa `corrected`, médias `msSuggest`/`msRun`, tokens approx totais e % com `contextCompacted`.
+
 ## Fluxo na UI
 
 1 Pedido (exemplos + anexos/pasta) → 2 Sugestões → 3 Especialista → 4 Prompt Forger → 5 Revisão → 6 Resposta (chat + agente + Git + verificação + painel de diffs).
