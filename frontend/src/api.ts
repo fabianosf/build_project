@@ -337,6 +337,8 @@ export async function chatContinue(params: {
   suggestDiff?: boolean;
   useWorkspace?: boolean;
   includeGit?: boolean;
+  agentTools?: boolean;
+  contextPaths?: string[];
 }): Promise<ChatResponse> {
   const response = await fetch(`${API_BASE}/api/chat/`, {
     method: "POST",
@@ -351,10 +353,21 @@ export async function chatContinue(params: {
       suggest_diff: Boolean(params.suggestDiff),
       use_workspace: Boolean(params.useWorkspace),
       include_git: Boolean(params.includeGit),
+      agent_tools: Boolean(params.agentTools),
+      context_paths: params.contextPaths ?? [],
     }),
   });
   return parseJson<ChatResponse>(response);
 }
+
+export type ToolTraceStep = {
+  round?: number;
+  name: string;
+  arguments?: Record<string, unknown>;
+  ok?: boolean;
+  error?: string | null;
+  preview?: string;
+};
 
 export type ChatStreamHandlers = {
   onMeta?: (meta: {
@@ -369,17 +382,20 @@ export type ChatStreamHandlers = {
     workspace_used?: boolean;
     workspace_files?: number;
     git_included?: boolean;
+    agent_tools?: boolean;
     suggest_diff?: boolean;
     warning?: string | null;
     document_recognized?: boolean;
     usage?: TurnUsage;
   }) => void;
+  onTool?: (step: ToolTraceStep) => void;
   onToken?: (text: string) => void;
   onDone?: (payload: {
     response: string;
     ai_executed: boolean;
     mode: string;
     usage?: TurnUsage;
+    tool_trace?: ToolTraceStep[];
   }) => void;
   onError?: (error: string, info?: { code?: string; retryable?: boolean }) => void;
 };
@@ -395,24 +411,42 @@ export async function chatContinueStream(
     suggestDiff?: boolean;
     useWorkspace?: boolean;
     includeGit?: boolean;
+    agentTools?: boolean;
+    contextPaths?: string[];
   },
   handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/chat/stream/`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      fragment_id: params.fragmentId,
-      message: params.message,
-      history: params.history,
-      attachments: params.attachments,
-      activation: params.activation,
-      web_search: Boolean(params.webSearch),
-      suggest_diff: Boolean(params.suggestDiff),
-      use_workspace: Boolean(params.useWorkspace),
-      include_git: Boolean(params.includeGit),
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/chat/stream/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fragment_id: params.fragmentId,
+        message: params.message,
+        history: params.history,
+        attachments: params.attachments,
+        activation: params.activation,
+        web_search: Boolean(params.webSearch),
+        suggest_diff: Boolean(params.suggestDiff),
+        use_workspace: Boolean(params.useWorkspace),
+        include_git: Boolean(params.includeGit),
+        agent_tools: Boolean(params.agentTools),
+        context_paths: params.contextPaths ?? [],
+      }),
+      signal,
+    });
+  } catch (err) {
+    if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+      handlers.onError?.("Geração interrompida.", {
+        code: "aborted",
+        retryable: false,
+      });
+      return;
+    }
+    throw err;
+  }
   if (!response.ok || !response.body) {
     let err = `Falha no stream (HTTP ${response.status}).`;
     let code: string | undefined;
@@ -439,69 +473,124 @@ export async function chatContinueStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split("\n\n");
-    buffer = parts.pop() ?? "";
-    for (const block of parts) {
-      const line = block
-        .split("\n")
-        .map((l) => l.trim())
-        .find((l) => l.startsWith("data:"));
-      if (!line) continue;
-      const raw = line.replace(/^data:\s?/, "");
-      try {
-        const evt = JSON.parse(raw) as {
-          type: string;
-          text?: string;
-          error?: string;
-          code?: string;
-          retryable?: boolean;
-          response?: string;
-          ai_executed?: boolean;
-          mode?: string;
-          fragment_id?: string;
-          fragment_name?: string;
-          fragment_truncated?: boolean;
-          rag_used?: boolean;
-          rag_chunks?: number;
-          warning?: string | null;
-          document_recognized?: boolean;
-          usage?: TurnUsage;
-        };
-        if (evt.type === "meta") {
-          handlers.onMeta?.({
-            fragment_id: evt.fragment_id ?? "",
-            fragment_name: evt.fragment_name ?? "",
-            fragment_truncated: evt.fragment_truncated,
-            rag_used: evt.rag_used,
-            rag_chunks: evt.rag_chunks,
-            warning: evt.warning,
-            document_recognized: evt.document_recognized,
-            usage: evt.usage,
-          });
-        } else if (evt.type === "token" && evt.text) {
-          handlers.onToken?.(evt.text);
-        } else if (evt.type === "done") {
-          handlers.onDone?.({
-            response: evt.response ?? "",
-            ai_executed: Boolean(evt.ai_executed),
-            mode: evt.mode ?? "llm",
-            usage: evt.usage,
-          });
-        } else if (evt.type === "error") {
-          handlers.onError?.(evt.error ?? "Erro no stream.", {
-            code: evt.code,
-            retryable: evt.retryable,
-          });
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        await reader.cancel();
+        handlers.onError?.("Geração interrompida.", {
+          code: "aborted",
+          retryable: false,
+        });
+        return;
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? "";
+      for (const block of parts) {
+        const line = block
+          .split("\n")
+          .map((l) => l.trim())
+          .find((l) => l.startsWith("data:"));
+        if (!line) continue;
+        const raw = line.replace(/^data:\s?/, "");
+        try {
+          const evt = JSON.parse(raw) as {
+            type: string;
+            text?: string;
+            error?: string;
+            code?: string;
+            retryable?: boolean;
+            response?: string;
+            ai_executed?: boolean;
+            mode?: string;
+            fragment_id?: string;
+            fragment_name?: string;
+            fragment_truncated?: boolean;
+            rag_used?: boolean;
+            rag_chunks?: number;
+            warning?: string | null;
+            document_recognized?: boolean;
+            usage?: TurnUsage;
+            tool_trace?: ToolTraceStep[];
+            name?: string;
+            round?: number;
+            arguments?: Record<string, unknown>;
+            ok?: boolean;
+            preview?: string;
+            agent_tools?: boolean;
+          };
+          if (evt.type === "meta") {
+            handlers.onMeta?.({
+              fragment_id: evt.fragment_id ?? "",
+              fragment_name: evt.fragment_name ?? "",
+              fragment_truncated: evt.fragment_truncated,
+              rag_used: evt.rag_used,
+              rag_chunks: evt.rag_chunks,
+              warning: evt.warning,
+              document_recognized: evt.document_recognized,
+              agent_tools: evt.agent_tools,
+              usage: evt.usage,
+            });
+          } else if (evt.type === "tool" && evt.name) {
+            handlers.onTool?.({
+              round: evt.round,
+              name: evt.name,
+              arguments: evt.arguments,
+              ok: evt.ok,
+              error: evt.error,
+              preview: evt.preview,
+            });
+          } else if (evt.type === "token" && evt.text) {
+            handlers.onToken?.(evt.text);
+          } else if (evt.type === "done") {
+            handlers.onDone?.({
+              response: evt.response ?? "",
+              ai_executed: Boolean(evt.ai_executed),
+              mode: evt.mode ?? "llm",
+              usage: evt.usage,
+              tool_trace: evt.tool_trace,
+            });
+          } else if (evt.type === "error") {
+            handlers.onError?.(evt.error ?? "Erro no stream.", {
+              code: evt.code,
+              retryable: evt.retryable,
+            });
+          }
+        } catch {
+          /* skip bad chunk */
         }
-      } catch {
-        /* skip bad chunk */
       }
     }
+  } catch (err) {
+    if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+      handlers.onError?.("Geração interrompida.", {
+        code: "aborted",
+        retryable: false,
+      });
+      return;
+    }
+    throw err;
   }
+}
+
+export type WorkspaceSearchHit = {
+  path: string;
+  score?: number;
+  snippet?: string;
+};
+
+export async function searchWorkspaceFiles(
+  query = "",
+): Promise<WorkspaceSearchHit[]> {
+  const q = encodeURIComponent(query);
+  const response = await fetch(`${API_BASE}/api/workspace/search/?q=${q}`);
+  const data = await parseJson<{
+    results?: WorkspaceSearchHit[];
+    error?: string;
+  }>(response);
+  return data.results ?? [];
 }
 
 export type SandboxResult = {

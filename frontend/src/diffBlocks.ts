@@ -7,6 +7,11 @@ export type DiffBlock = {
   files: string[];
 };
 
+export type DiffPatch = {
+  path: string;
+  unified_diff: string;
+};
+
 const FENCE_RE = /```(diff|patch)\s*\n([\s\S]*?)```/gi;
 
 function extractFiles(body: string): string[] {
@@ -33,6 +38,49 @@ function extractFiles(body: string): string[] {
   return files;
 }
 
+/** Split a unified diff that may contain multiple files into per-file patches. */
+export function splitUnifiedDiff(body: string): DiffPatch[] {
+  const normalized = body.replace(/\r\n/g, "\n").replace(/\n$/, "") + "\n";
+  const gitChunks = normalized
+    .split(/(?=^diff --git )/m)
+    .map((c) => c.trimEnd() + "\n")
+    .filter((c) => c.trim());
+
+  if (
+    gitChunks.length > 1 ||
+    (gitChunks.length === 1 && gitChunks[0].startsWith("diff --git "))
+  ) {
+    return gitChunks
+      .map((chunk) => {
+        const files = extractFiles(chunk);
+        return { path: files[0] || "", unified_diff: chunk };
+      })
+      .filter((p) => p.path || p.unified_diff.trim());
+  }
+
+  const fileChunks = normalized
+    .split(/(?=^--- )/m)
+    .map((c) => c.trimEnd() + "\n")
+    .filter((c) => c.trim().startsWith("--- "));
+
+  if (fileChunks.length > 1) {
+    return fileChunks
+      .map((chunk) => {
+        const files = extractFiles(chunk);
+        return { path: files[0] || "", unified_diff: chunk };
+      })
+      .filter((p) => Boolean(p.path));
+  }
+
+  const files = extractFiles(body);
+  return [
+    {
+      path: files[0] || "",
+      unified_diff: normalized,
+    },
+  ];
+}
+
 export function parseDiffBlocks(markdown: string): DiffBlock[] {
   if (!markdown) return [];
   const out: DiffBlock[] = [];
@@ -57,11 +105,17 @@ export function joinDiffBodies(blocks: DiffBlock[]): string {
   return blocks.map((b) => b.body).join("\n\n");
 }
 
-export function blocksToPatches(
-  blocks: DiffBlock[],
-): { path: string; unified_diff: string }[] {
-  return blocks.map((b) => ({
-    path: b.files[0] || "",
-    unified_diff: b.body,
-  }));
+export function blocksToPatches(blocks: DiffBlock[]): DiffPatch[] {
+  const out: DiffPatch[] = [];
+  const seen = new Set<string>();
+  for (const block of blocks) {
+    for (const patch of splitUnifiedDiff(block.body)) {
+      if (!patch.path) continue;
+      const key = `${patch.path}\0${patch.unified_diff}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(patch);
+    }
+  }
+  return out;
 }

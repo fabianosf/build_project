@@ -11,6 +11,7 @@ import {
   runSandboxPython,
   runSpecialist,
   runWorkspaceRecipe,
+  searchWorkspaceFiles,
   suggestFragments,
   type CategoryGroup,
   type ChatAttachment,
@@ -25,6 +26,8 @@ import {
   type ActivationInfo,
   type TurnUsage,
   type WorkspaceRecipe,
+  type ToolTraceStep,
+  type WorkspaceSearchHit,
 } from "./api";
 import {
   clearSessions,
@@ -43,6 +46,7 @@ import { FOLDER_MAX_FILES, pickFolderFiles } from "./folderPicker";
 import { parseDiffBlocks } from "./diffBlocks";
 import { DiffPanel } from "./DiffPanel";
 import { REQUEST_EXAMPLES } from "./requestExamples";
+import { buildCommitSuggestion } from "./commitSuggest";
 
 type Phase = "select" | "review" | "result";
 type UiStep = 1 | 2 | 3;
@@ -223,8 +227,15 @@ export default function App() {
   const [webSearchOn, setWebSearchOn] = useState(false);
   const [useWorkspaceOn, setUseWorkspaceOn] = useState(false);
   const [includeGitOn, setIncludeGitOn] = useState(false);
+  const [agentToolsOn, setAgentToolsOn] = useState(false);
+  const [toolSteps, setToolSteps] = useState<ToolTraceStep[]>([]);
   const [suggestDiffOn, setSuggestDiffOn] = useState(false);
   const [folderHint, setFolderHint] = useState<string | null>(null);
+  const [contextPaths, setContextPaths] = useState<string[]>([]);
+  const [atHits, setAtHits] = useState<WorkspaceSearchHit[]>([]);
+  const [atOpen, setAtOpen] = useState(false);
+  const [postApplyVerify, setPostApplyVerify] = useState(false);
+  const [commitSuggestBusy, setCommitSuggestBusy] = useState(false);
 
   const [showHistory, setShowHistory] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -235,6 +246,8 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatAbortRef = useRef<AbortController | null>(null);
+  const atSearchTimer = useRef<number | null>(null);
 
   function refreshHistory() {
     setHistory(listSessions());
@@ -325,6 +338,7 @@ export default function App() {
               (r) => r.group === "git" && r.ready,
             );
             if (hasGit) setIncludeGitOn(true);
+            if (health.workspace.enabled) setAgentToolsOn(true);
           }
         }
       } catch (err) {
@@ -544,6 +558,10 @@ export default function App() {
     setPipelineError(null);
     setChatBusy(true);
     setChatTyping(true);
+    setToolSteps([]);
+    chatAbortRef.current?.abort();
+    const abort = new AbortController();
+    chatAbortRef.current = abort;
     const userLine =
       requestText.trim() ||
       `(anexos: ${pendingAttachments.map((a) => a.name).join(", ")})`;
@@ -573,8 +591,10 @@ export default function App() {
           activation: true,
           webSearch: webSearchOn,
           suggestDiff: suggestDiffOn,
-          useWorkspace: useWorkspaceOn,
+          useWorkspace: useWorkspaceOn || contextPaths.length > 0,
           includeGit: includeGitOn,
+          agentTools: agentToolsOn,
+          contextPaths,
         },
         {
           onMeta: (meta) => {
@@ -604,6 +624,9 @@ export default function App() {
               warning: meta.warning ?? undefined,
             });
           },
+          onTool: (step) => {
+            setToolSteps((prev) => [...prev, step]);
+          },
           onToken: (text) => {
             if (!gotToken) {
               gotToken = true;
@@ -624,6 +647,9 @@ export default function App() {
           onDone: (payload) => {
             setChatTyping(false);
             if (payload.usage) setLastUsage(payload.usage);
+            if (payload.tool_trace?.length) {
+              setToolSteps(payload.tool_trace);
+            }
             setChatMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -674,18 +700,30 @@ export default function App() {
           },
           onError: (error, info) => {
             setChatTyping(false);
+            if (info?.code === "aborted") {
+              setToolSteps([]);
+              setCopyNotice("Geração interrompida.");
+              window.setTimeout(() => setCopyNotice(null), 2500);
+              return;
+            }
             setPipelineError(error);
             setPipelineRetryable(Boolean(info?.retryable) || isRetryableError(error));
             setPhase("review");
           },
         },
+        abort.signal,
       );
     } catch (err) {
       setChatTyping(false);
+      if (abort.signal.aborted) {
+        setToolSteps([]);
+        return;
+      }
       const msg = err instanceof Error ? err.message : "Erro ao iniciar conversa";
       setPipelineError(msg);
       setPhase("review");
     } finally {
+      if (chatAbortRef.current === abort) chatAbortRef.current = null;
       setChatBusy(false);
       setChatTyping(false);
     }
@@ -731,6 +769,13 @@ export default function App() {
     setChatMessages([]);
     setChatInput("");
     setChatError(null);
+    setContextPaths([]);
+    setToolSteps([]);
+    setPostApplyVerify(false);
+    setAtOpen(false);
+    setAtHits([]);
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
     setChatWarning(null);
     setPendingAttachments([]);
     setFragmentTruncated(false);
@@ -1074,6 +1119,10 @@ export default function App() {
     setChatError(null);
     setChatRetryable(false);
     setChatWarning(null);
+    setToolSteps([]);
+    chatAbortRef.current?.abort();
+    const abort = new AbortController();
+    chatAbortRef.current = abort;
     const displayUser =
       text ||
       `(anexos: ${pendingAttachments.map((a) => a.name).join(", ")})`;
@@ -1086,6 +1135,7 @@ export default function App() {
         data_base64: a.data_base64,
       }),
     );
+    const pathsForTurn = [...contextPaths];
     setChatMessages((prev) => [
       ...prev,
       { role: "user", content: displayUser },
@@ -1093,6 +1143,8 @@ export default function App() {
     ]);
     setChatInput("");
     setPendingAttachments([]);
+    setAtOpen(false);
+    setAtHits([]);
     try {
       let gotToken = false;
       await chatContinueStream(
@@ -1108,8 +1160,10 @@ export default function App() {
           ),
           webSearch: webSearchOn,
           suggestDiff: suggestDiffOn,
-          useWorkspace: useWorkspaceOn,
+          useWorkspace: useWorkspaceOn || pathsForTurn.length > 0,
           includeGit: includeGitOn,
+          agentTools: agentToolsOn,
+          contextPaths: pathsForTurn,
         },
         {
           onMeta: (meta) => {
@@ -1119,6 +1173,9 @@ export default function App() {
               chunks: meta.rag_chunks ?? 0,
             });
             if (meta.warning) setChatWarning(meta.warning);
+          },
+          onTool: (step) => {
+            setToolSteps((prev) => [...prev, step]);
           },
           onToken: (tok) => {
             if (!gotToken) {
@@ -1140,6 +1197,9 @@ export default function App() {
           onDone: (payload) => {
             setChatTyping(false);
             if (payload.usage) setLastUsage(payload.usage);
+            if (payload.tool_trace?.length) {
+              setToolSteps(payload.tool_trace);
+            }
             setChatMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -1163,16 +1223,28 @@ export default function App() {
           },
           onError: (error, info) => {
             setChatTyping(false);
+            if (info?.code === "aborted") {
+              setToolSteps([]);
+              setCopyNotice("Geração interrompida.");
+              window.setTimeout(() => setCopyNotice(null), 2500);
+              return;
+            }
             setChatError(error);
             setChatRetryable(Boolean(info?.retryable) || isRetryableError(error));
           },
         },
+        abort.signal,
       );
     } catch (err) {
       setChatTyping(false);
-      setChatError(formatLlmError(err));
-      setChatRetryable(isRetryableError(err));
+      if (abort.signal.aborted) {
+        setToolSteps([]);
+      } else {
+        setChatError(formatLlmError(err));
+        setChatRetryable(isRetryableError(err));
+      }
     } finally {
+      if (chatAbortRef.current === abort) chatAbortRef.current = null;
       setChatBusy(false);
       setChatTyping(false);
     }
@@ -1213,10 +1285,90 @@ export default function App() {
     );
   }
 
+  function stopChatGeneration() {
+    if (!chatAbortRef.current) return;
+    chatAbortRef.current.abort();
+    chatAbortRef.current = null;
+    setToolSteps([]);
+    setChatTyping(false);
+    setChatBusy(false);
+    setCopyNotice("Geração interrompida.");
+    window.setTimeout(() => setCopyNotice(null), 2500);
+  }
+
+  function scheduleAtSearch(value: string) {
+    if (!workspaceMeta?.enabled) {
+      setAtOpen(false);
+      setAtHits([]);
+      return;
+    }
+    const match = /(^|\s)@([^\s@]*)$/.exec(value);
+    if (!match) {
+      setAtOpen(false);
+      setAtHits([]);
+      return;
+    }
+    const q = match[2] ?? "";
+    setAtOpen(true);
+    if (atSearchTimer.current != null) {
+      window.clearTimeout(atSearchTimer.current);
+    }
+    atSearchTimer.current = window.setTimeout(() => {
+      void searchWorkspaceFiles(q)
+        .then((hits) => setAtHits(hits.slice(0, 12)))
+        .catch(() => setAtHits([]));
+    }, 180);
+  }
+
+  function pickContextPath(path: string) {
+    setContextPaths((prev) =>
+      prev.includes(path) ? prev : [...prev, path].slice(0, 12),
+    );
+    setUseWorkspaceOn(true);
+    setChatInput((prev) => prev.replace(/(^|\s)@[^\s@]*$/, "$1").trimEnd());
+    setAtOpen(false);
+    setAtHits([]);
+  }
+
+  async function handleSuggestCommit() {
+    if (commitSuggestBusy || !workspaceMeta?.enabled) return;
+    setCommitSuggestBusy(true);
+    setChatError(null);
+    try {
+      const [statusRes, statRes] = await Promise.all([
+        runWorkspaceRecipe("git_status"),
+        runWorkspaceRecipe("git_diff_stat").catch(() => null),
+      ]);
+      const suggestion = buildCommitSuggestion(
+        statusRes.combined || statusRes.stdout || "",
+        statRes?.combined || statRes?.stdout || "",
+      );
+      setChatInput(suggestion);
+      setCopyNotice("Mensagem de commit sugerida no composer (sem git commit).");
+      window.setTimeout(() => setCopyNotice(null), 3500);
+    } catch (err) {
+      setChatError(
+        err instanceof Error ? err.message : "Falha ao sugerir commit",
+      );
+    } finally {
+      setCommitSuggestBusy(false);
+    }
+  }
+
+  function preferredVerifyRecipe(): string | null {
+    const ready = runRecipes.filter((r) => r.ready && r.group !== "git");
+    const prefer = ["django_check", "manage_check", "pytest", "npm_test", "npm_build"];
+    for (const id of prefer) {
+      if (ready.some((r) => r.id === id)) return id;
+    }
+    return ready[0]?.id ?? null;
+  }
+
   async function handleWorkspaceVerify(recipeId: string) {
     if (verifyBusy || chatBusy || !workspaceMeta?.enabled) return;
     setVerifyBusy(true);
     setChatError(null);
+    setPostApplyVerify(false);
     try {
       const result = await runWorkspaceRecipe(recipeId);
       const combined = result.combined || result.stderr || result.stdout || "";
@@ -1346,6 +1498,14 @@ export default function App() {
           Descreva o que precisa; o app escolhe o especialista e gera a
           resposta.
         </p>
+        {workspaceMeta && !workspaceMeta.enabled ? (
+          <aside className="workspace-onboard" role="status">
+            <strong>Workspace desligado.</strong> Para ler/aplicar diffs no
+            disco, defina{" "}
+            <code>WORKSPACE_ROOT=/caminho/absoluto/do/projeto</code> no{" "}
+            <code>.env</code> e reinicie o backend.
+          </aside>
+        ) : null}
         {showAdvanced ? (
           <div className="advanced-box">
             <div className="form-actions hero-actions">
@@ -1578,6 +1738,15 @@ export default function App() {
                   onChange={(e) => setIncludeGitOn(e.target.checked)}
                 />
                 Incluir Git
+              </label>
+              <label className="toggle-chip">
+                <input
+                  type="checkbox"
+                  checked={agentToolsOn}
+                  disabled={!workspaceMeta?.enabled}
+                  onChange={(e) => setAgentToolsOn(e.target.checked)}
+                />
+                Agente
               </label>
               <label className="toggle-chip">
                 <input
@@ -2086,6 +2255,25 @@ export default function App() {
                     </span>
                   </div>
                 ) : null}
+                {toolSteps.length > 0 ? (
+                  <aside className="tool-trace" aria-label="Ferramentas do agente">
+                    <strong>Agente</strong>
+                    <ol>
+                      {toolSteps.map((step, i) => (
+                        <li key={`${step.name}-${i}`}>
+                          <span className={step.ok === false ? "tool-fail" : "tool-ok"}>
+                            {step.round != null ? `#${step.round} ` : ""}
+                            {step.name}
+                            {step.ok === false ? " (falhou)" : ""}
+                          </span>
+                          {step.preview ? (
+                            <pre className="tool-preview">{step.preview}</pre>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ol>
+                  </aside>
+                ) : null}
                 {lastSandboxOut ? (
                   <div className="sandbox-followup">
                     <button
@@ -2116,13 +2304,26 @@ export default function App() {
                             key={r.id}
                             type="button"
                             className="btn-secondary"
-                            disabled={verifyBusy || chatBusy}
+                            disabled={verifyBusy || chatBusy || commitSuggestBusy}
                             title={r.label}
                             onClick={() => void handleWorkspaceVerify(r.id)}
                           >
                             {verifyBusy ? "…" : r.label}
                           </button>
                         ))}
+                      {runRecipes.some(
+                        (r) => r.id === "git_status" && r.ready,
+                      ) ? (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          disabled={verifyBusy || chatBusy || commitSuggestBusy}
+                          title="Gera texto de mensagem de commit (não executa git commit)"
+                          onClick={() => void handleSuggestCommit()}
+                        >
+                          {commitSuggestBusy ? "…" : "Sugerir commit"}
+                        </button>
+                      ) : null}
                     </div>
                     <div
                       className="verify-bar"
@@ -2166,7 +2367,37 @@ export default function App() {
                       setCopyNotice(msg);
                       window.setTimeout(() => setCopyNotice(null), 4000);
                     }}
+                    onApplied={() => {
+                      setPostApplyVerify(true);
+                      setCopyNotice(
+                        "Diffs aplicados. Use «Verificar agora» abaixo.",
+                      );
+                      window.setTimeout(() => setCopyNotice(null), 4000);
+                    }}
                   />
+                ) : null}
+                {postApplyVerify && workspaceMeta?.enabled ? (
+                  <div className="post-apply-bar" role="status">
+                    <span>Diffs gravados.</span>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      disabled={verifyBusy || chatBusy || !preferredVerifyRecipe()}
+                      onClick={() => {
+                        const id = preferredVerifyRecipe();
+                        if (id) void handleWorkspaceVerify(id);
+                      }}
+                    >
+                      Verificar agora
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-link"
+                      onClick={() => setPostApplyVerify(false)}
+                    >
+                      dispensar
+                    </button>
+                  </div>
                 ) : null}
                 <div ref={chatEndRef} />
               </div>
@@ -2174,23 +2405,75 @@ export default function App() {
               <form className="chat-composer chat-composer-sticky" onSubmit={handleChatSend}>
                 <label htmlFor="chat-input" className="field-label">
                   Continue perguntando
+                  {workspaceMeta?.enabled ? (
+                    <span className="field-hint"> · digite @ para arquivos do workspace</span>
+                  ) : null}
                 </label>
-                <textarea
-                  id="chat-input"
-                  rows={3}
-                  value={chatInput}
-                  disabled={chatBusy}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      if (!chatBusy) {
-                        e.currentTarget.form?.requestSubmit();
+                <div className="composer-input-wrap">
+                  <textarea
+                    id="chat-input"
+                    rows={3}
+                    value={chatInput}
+                    disabled={chatBusy}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setChatInput(v);
+                      scheduleAtSearch(v);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape" && atOpen) {
+                        e.preventDefault();
+                        setAtOpen(false);
+                        return;
                       }
-                    }
-                  }}
-                  placeholder="Sua pergunta… Enter envia · Shift+Enter nova linha"
-                />
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        if (!chatBusy) {
+                          e.currentTarget.form?.requestSubmit();
+                        }
+                      }
+                    }}
+                    placeholder="Sua pergunta… @arquivo · Enter envia · Shift+Enter nova linha"
+                  />
+                  {atOpen && workspaceMeta?.enabled ? (
+                    <ul className="at-file-menu" role="listbox" aria-label="Arquivos do workspace">
+                      {atHits.length === 0 ? (
+                        <li className="at-file-empty">Buscando…</li>
+                      ) : (
+                        atHits.map((hit) => (
+                          <li key={hit.path}>
+                            <button
+                              type="button"
+                              onClick={() => pickContextPath(hit.path)}
+                            >
+                              {hit.path}
+                            </button>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  ) : null}
+                </div>
+                {contextPaths.length > 0 ? (
+                  <ul className="attach-chips context-chips" aria-label="Contexto @arquivo">
+                    {contextPaths.map((path) => (
+                      <li key={path}>
+                        <span>@{path}</span>
+                        <button
+                          type="button"
+                          className="btn-link"
+                          onClick={() =>
+                            setContextPaths((prev) =>
+                              prev.filter((p) => p !== path),
+                            )
+                          }
+                        >
+                          remover
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
                 {pendingAttachments.length > 0 ? (
                   <ul className="attach-chips">
                     {pendingAttachments.map((a) => (
@@ -2265,6 +2548,15 @@ export default function App() {
                   <label className="toggle-chip">
                     <input
                       type="checkbox"
+                      checked={agentToolsOn}
+                      disabled={chatBusy || !workspaceMeta?.enabled}
+                      onChange={(e) => setAgentToolsOn(e.target.checked)}
+                    />
+                    Agente
+                  </label>
+                  <label className="toggle-chip">
+                    <input
+                      type="checkbox"
                       checked={suggestDiffOn}
                       disabled={chatBusy}
                       onChange={(e) => setSuggestDiffOn(e.target.checked)}
@@ -2281,6 +2573,15 @@ export default function App() {
                   <button type="submit" disabled={chatBusy}>
                     {chatBusy ? "Enviando…" : "Enviar"}
                   </button>
+                  {chatBusy ? (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={stopChatGeneration}
+                    >
+                      Parar
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="btn-secondary"

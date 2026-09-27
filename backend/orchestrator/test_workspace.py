@@ -108,3 +108,77 @@ class WorkspaceChatInjectTests(SimpleTestCase):
                 )
                 self.assertIn("WorkspaceDemo", blob)
                 self.assertIn("app.py", blob)
+
+    def test_prepare_chat_context_paths(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pinned.ts").write_text(
+                "export const PINNED = 42;\n", encoding="utf-8"
+            )
+            (root / "other.py").write_text("x = 1\n", encoding="utf-8")
+            with override_settings(
+                WORKSPACE_ROOT=str(root),
+                WORKSPACE_SEARCH_TOP_K=4,
+                WORKSPACE_MAX_CONTEXT_CHARS=8000,
+            ):
+                fid = FRAGMENTS[0]["id"]
+                prepared = prepare_chat(
+                    fid,
+                    "O que é PINNED?",
+                    [],
+                    [],
+                    use_workspace=True,
+                    context_paths=["pinned.ts"],
+                )
+                self.assertTrue(prepared["workspace_used"])
+                self.assertGreaterEqual(prepared["workspace_files"], 1)
+                blob = "\n".join(
+                    m["content"] if isinstance(m["content"], str) else ""
+                    for m in prepared["messages"]
+                    if m["role"] == "system"
+                )
+                self.assertIn("PINNED", blob)
+                self.assertIn("pinned.ts", blob)
+
+
+class WorkspaceMultiApplyTests(SimpleTestCase):
+    """Smoke: multi-file patches (DiffPanel → apply-diff contract)."""
+
+    def test_apply_patches_two_files(self) -> None:
+        import tempfile
+
+        from orchestrator.services.workspace_service import apply_patches
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.py").write_text("a = 1\n", encoding="utf-8")
+            (root / "b.py").write_text("b = 1\n", encoding="utf-8")
+            with override_settings(WORKSPACE_ROOT=str(root)):
+                result = apply_patches(
+                    [
+                        {
+                            "path": "a.py",
+                            "unified_diff": (
+                                "--- a/a.py\n+++ b/a.py\n"
+                                "@@ -1 +1 @@\n-a = 1\n+a = 2\n"
+                            ),
+                        },
+                        {
+                            "path": "b.py",
+                            "unified_diff": (
+                                "--- a/b.py\n+++ b/b.py\n"
+                                "@@ -1 +1 @@\n-b = 1\n+b = 2\n"
+                            ),
+                        },
+                    ]
+                )
+                self.assertEqual(result["applied"], 2)
+                self.assertEqual(result["failed"], 0)
+                self.assertEqual(
+                    (root / "a.py").read_text(encoding="utf-8"), "a = 2\n"
+                )
+                self.assertEqual(
+                    (root / "b.py").read_text(encoding="utf-8"), "b = 2\n"
+                )

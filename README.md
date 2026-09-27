@@ -182,21 +182,24 @@ No chat (e no pedido), marque **Buscar na web** para injetar resultados externos
 WORKSPACE_ROOT=/caminho/absoluto/do/seu/projeto
 ```
 
-Reinicie o backend. O badge **Workspace · nome** aparece no topo; o toggle **Usar workspace** injeta arquivos relevantes do disco no turno. No painel de diffs, **Aplicar no workspace** grava patches após confirmação (cria `.bak` ao lado). Paths sensíveis (`.env`, chaves) são bloqueados.
+Reinicie o backend. O badge **Workspace · nome** aparece no topo; se estiver off, um aviso no hero orienta o `WORKSPACE_ROOT`. O toggle **Usar workspace** injeta arquivos relevantes do disco no turno. No chat, digite **`@`** para escolher arquivos (chips de contexto). No painel de diffs, **Aplicar no workspace** grava patches após confirmação (cria `.bak`) e oferece **Verificar agora**. Paths sensíveis (`.env`, chaves) são bloqueados.
 
 **Verificação**: com workspace ativo, a barra **Verificar** no chat roda receitas allowlist (`pytest`, `manage.py test/check`, `compileall`, `npm test/build`) com timeout (`WORKSPACE_RUN_TIMEOUT_SEC`). O log aparece na thread; **Enviar log ao especialista** cola no composer. Sem shell livre.
 
-**Git (somente leitura)**: barra **Git** com `status` / `diff` / `log`; toggle **Incluir Git** injeta resumo no prompt do turno. Sem `commit`/`push`. Exige `.git` em `WORKSPACE_ROOT` (ex.: `git init` e remote `https://github.com/fabianosf/build_project.git`).
+**Git (somente leitura)**: barra **Git** com `status` / `diff` / `log`; **Sugerir commit** monta uma mensagem no composer (sem `git commit`). Toggle **Incluir Git** injeta resumo no prompt do turno. Sem `commit`/`push`. Exige `.git` em `WORKSPACE_ROOT`.
+
+**Agente (mini tool-loop)**: toggle **Agente** (precisa de workspace). Até `AGENT_MAX_ROUNDS` (padrão 5) rodadas; até 2 tools por rodada (`workspace_search`, `workspace_read`, `workspace_list`, `workspace_run`). Eventos SSE `tool` saem em tempo real durante o loop. Use **Parar** para cancelar. Apply de diff continua só com confirmação humana (por arquivo ou todos).
 
 ## Fluxo na UI
 
-1 Pedido (exemplos + anexos/pasta) → 2 Sugestões → 3 Especialista → 4 Prompt Forger → 5 Revisão → 6 Resposta (chat + Git + verificação + painel de diffs).
+1 Pedido (exemplos + anexos/pasta) → 2 Sugestões → 3 Especialista → 4 Prompt Forger → 5 Revisão → 6 Resposta (chat + agente + Git + verificação + painel de diffs).
 
 Exemplos preenchíveis, chips de stack/seção/arquivo, aviso de até 2 chamadas (sem preço monetário inventado), copiar draft/resposta. Sem histórico sensível em localStorage por padrão.
 
 ## Limitações
 
-- Shell/git de escrita não estão disponíveis (só status/diff/log e receitas de verificação)
+- Shell/git de escrita não estão disponíveis (só status/diff/log, sugestão de mensagem de commit e receitas de verificação)
+- Agente não aplica patches sozinho (máx. rodadas configuráveis; até 2 tools/rodada)
 - Apply de diff exige unified diff alinhado ao arquivo atual
 - Busca web depende de rede/provedor e pode retornar vazio
 - APIs LLM externas só são exercidas se você configurar e chamar manualmente; os testes automatizados **não** cobram provedor real

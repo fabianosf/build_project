@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { applyWorkspaceDiffs } from "./api";
+import { useMemo, useState } from "react";
+import { applyWorkspaceDiffs, type ApplyDiffResult } from "./api";
 import {
   blocksToPatches,
   joinDiffBodies,
   type DiffBlock,
+  type DiffPatch,
 } from "./diffBlocks";
 
 async function copyText(text: string): Promise<boolean> {
@@ -27,11 +28,40 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+function DiffHighlight({ body }: { body: string }) {
+  const lines = body.replace(/\n$/, "").split("\n");
+  return (
+    <pre className="diff-panel-pre">
+      <code>
+        {lines.map((line, i) => {
+          let cls = "diff-line";
+          if (line.startsWith("+++") || line.startsWith("---")) {
+            cls += " diff-file";
+          } else if (line.startsWith("+")) {
+            cls += " diff-add";
+          } else if (line.startsWith("-")) {
+            cls += " diff-del";
+          } else if (line.startsWith("@@")) {
+            cls += " diff-hunk";
+          }
+          return (
+            <span key={i} className={cls}>
+              {line}
+              {"\n"}
+            </span>
+          );
+        })}
+      </code>
+    </pre>
+  );
+}
+
 type Props = {
   blocks: DiffBlock[];
   workspaceEnabled?: boolean;
   workspaceName?: string | null;
   onNotice?: (message: string) => void;
+  onApplied?: (result: ApplyDiffResult) => void;
 };
 
 export function DiffPanel({
@@ -39,19 +69,22 @@ export function DiffPanel({
   workspaceEnabled = false,
   workspaceName,
   onNotice,
+  onApplied,
 }: Props) {
+  const patches = useMemo(() => blocksToPatches(blocks), [blocks]);
   const [open, setOpen] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(blocks.map((b) => [b.id, true])),
+    Object.fromEntries(patches.map((p) => [p.path, true])),
   );
   const [applying, setApplying] = useState(false);
+  const [applyingPath, setApplyingPath] = useState<string | null>(null);
 
   if (!blocks.length) return null;
 
-  async function copyOne(block: DiffBlock) {
-    const ok = await copyText(block.body);
+  async function copyOne(patch: DiffPatch) {
+    const ok = await copyText(patch.unified_diff);
     onNotice?.(
       ok
-        ? `Diff copiado${block.files[0] ? `: ${block.files[0]}` : ""}.`
+        ? `Diff copiado${patch.path ? `: ${patch.path}` : ""}.`
         : "Falha ao copiar.",
     );
   }
@@ -63,24 +96,27 @@ export function DiffPanel({
     );
   }
 
-  async function applyAll() {
+  async function applyPatches(selected: DiffPatch[]) {
     if (!workspaceEnabled) {
       onNotice?.("Defina WORKSPACE_ROOT no .env e reinicie o backend.");
       return;
     }
+    if (!selected.length) {
+      onNotice?.("Nenhum arquivo no diff para aplicar.");
+      return;
+    }
     const label = workspaceName || "WORKSPACE_ROOT";
+    const names = selected.map((p) => p.path).join(", ");
     const okConfirm = window.confirm(
-      `Isso altera arquivos em «${label}». Backups .bak serão criados. Continuar?`,
+      `Aplicar em «${label}»:\n${names}\n\nBackups .bak serão criados. Continuar?`,
     );
     if (!okConfirm) return;
     setApplying(true);
     try {
-      const result = await applyWorkspaceDiffs(blocksToPatches(blocks));
+      const result = await applyWorkspaceDiffs(selected);
       const fails = result.results.filter((r) => !r.ok);
       if (fails.length === 0) {
-        onNotice?.(
-          `Aplicados ${result.applied} arquivo(s) no workspace.`,
-        );
+        onNotice?.(`Aplicados ${result.applied} arquivo(s) no workspace.`);
       } else {
         onNotice?.(
           `Aplicados ${result.applied}; falhas: ${fails
@@ -88,15 +124,29 @@ export function DiffPanel({
             .join(" · ")}`,
         );
       }
+      if (result.applied > 0) {
+        onApplied?.(result);
+      }
     } catch (err) {
       onNotice?.(err instanceof Error ? err.message : "Falha ao aplicar diffs.");
     } finally {
       setApplying(false);
+      setApplyingPath(null);
     }
   }
 
-  function toggle(id: string) {
-    setOpen((prev) => ({ ...prev, [id]: !prev[id] }));
+  async function applyAll() {
+    setApplyingPath(null);
+    await applyPatches(patches);
+  }
+
+  async function applyOne(patch: DiffPatch) {
+    setApplyingPath(patch.path);
+    await applyPatches([patch]);
+  }
+
+  function toggle(path: string) {
+    setOpen((prev) => ({ ...prev, [path]: !prev[path] }));
   }
 
   return (
@@ -105,7 +155,7 @@ export function DiffPanel({
         <div>
           <strong>Diffs sugeridos</strong>
           <p className="diff-panel-note">
-            Sugestão até você confirmar. Copie ou aplique no workspace.
+            Sugestão até você confirmar. Aplique um arquivo ou todos.
           </p>
         </div>
         <div className="diff-panel-actions">
@@ -119,7 +169,7 @@ export function DiffPanel({
           <button
             type="button"
             className="btn-secondary"
-            disabled={!workspaceEnabled || applying}
+            disabled={!workspaceEnabled || applying || patches.length === 0}
             title={
               workspaceEnabled
                 ? "Grava patches em WORKSPACE_ROOT (com .bak)"
@@ -127,41 +177,44 @@ export function DiffPanel({
             }
             onClick={() => void applyAll()}
           >
-            {applying ? "Aplicando…" : "Aplicar no workspace"}
+            {applying && !applyingPath ? "Aplicando…" : "Aplicar todos"}
           </button>
         </div>
       </div>
       <ul className="diff-panel-list">
-        {blocks.map((block, index) => {
-          const label =
-            block.files.length > 0
-              ? block.files.join(", ")
-              : `Bloco ${index + 1}`;
-          const isOpen = open[block.id] !== false;
+        {patches.map((patch, index) => {
+          const label = patch.path || `Bloco ${index + 1}`;
+          const isOpen = open[patch.path] !== false;
+          const busy = applying && applyingPath === patch.path;
           return (
-            <li key={block.id} className="diff-panel-item">
+            <li key={`${patch.path}-${index}`} className="diff-panel-item">
               <div className="diff-panel-item-bar">
                 <button
                   type="button"
                   className="btn-link diff-toggle"
                   aria-expanded={isOpen}
-                  onClick={() => toggle(block.id)}
+                  onClick={() => toggle(patch.path)}
                 >
                   {isOpen ? "▾" : "▸"} {label}
                 </button>
                 <button
                   type="button"
                   className="btn-secondary"
-                  onClick={() => void copyOne(block)}
+                  onClick={() => void copyOne(patch)}
                 >
                   Copiar
                 </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={!workspaceEnabled || applying || !patch.path}
+                  title="Aplicar só este arquivo (com confirmação)"
+                  onClick={() => void applyOne(patch)}
+                >
+                  {busy ? "Aplicando…" : "Aplicar"}
+                </button>
               </div>
-              {isOpen ? (
-                <pre className="diff-panel-pre">
-                  <code>{block.body}</code>
-                </pre>
-              ) : null}
+              {isOpen ? <DiffHighlight body={patch.unified_diff} /> : null}
             </li>
           );
         })}

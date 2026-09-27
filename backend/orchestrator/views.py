@@ -31,12 +31,31 @@ from orchestrator.services.selection_service import suggest_specialists
 from orchestrator.services.workspace_service import (
     WorkspaceError,
     apply_patches,
+    list_tree as workspace_list_tree,
     read_file as workspace_read_file,
     search_files as workspace_search_files,
     status as workspace_status,
 )
 from orchestrator.services.workspace_run_service import run_recipe as workspace_run_recipe
 
+
+def _context_paths_from(data: dict) -> list[str]:
+    raw = data.get("context_paths") or data.get("workspace_paths") or []
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        path = item.strip().replace("\\", "/")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+        if len(out) >= 12:
+            break
+    return out
 
 def _fragment_id_from(data: dict) -> str:
     return (
@@ -263,6 +282,10 @@ class ChatView(APIView):
         include_git = bool(
             request.data.get("include_git") or request.data.get("git_context")
         )
+        agent_tools = bool(
+            request.data.get("agent_tools") or request.data.get("agent")
+        )
+        context_paths = _context_paths_from(request.data)
 
         if not fragment_id:
             return Response(
@@ -293,6 +316,8 @@ class ChatView(APIView):
                 suggest_diff=suggest_diff,
                 use_workspace=use_workspace,
                 include_git=include_git,
+                agent_tools=agent_tools,
+                context_paths=context_paths,
             )
         except OrchestrationError as exc:
             return Response({"error": str(exc)}, status=exc.http_status)
@@ -328,6 +353,10 @@ class ChatStreamView(APIView):
         include_git = bool(
             request.data.get("include_git") or request.data.get("git_context")
         )
+        agent_tools = bool(
+            request.data.get("agent_tools") or request.data.get("agent")
+        )
+        context_paths = _context_paths_from(request.data)
 
         if not fragment_id:
             return Response(
@@ -352,6 +381,8 @@ class ChatStreamView(APIView):
             suggest_diff=suggest_diff,
             use_workspace=use_workspace,
             include_git=include_git,
+            agent_tools=agent_tools,
+            context_paths=context_paths,
         )
         response = StreamingHttpResponse(
             stream,
@@ -431,13 +462,14 @@ class WorkspaceSearchView(APIView):
 
     def get(self, request: Request) -> Response:
         q = (request.query_params.get("q") or "").strip()
-        if not q:
-            return Response(
-                {"error": "Query 'q' é obrigatória."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         try:
-            hits = workspace_search_files(q)
+            if not q:
+                paths = workspace_list_tree(limit=40)
+                hits = [
+                    {"path": p, "score": 0.0, "snippet": ""} for p in paths
+                ]
+            else:
+                hits = workspace_search_files(q)
         except WorkspaceError as exc:
             return Response(
                 {"error": str(exc)},
