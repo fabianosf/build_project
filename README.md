@@ -1,4 +1,6 @@
-# Orquestrador de Fragmentos
+# Fragmenta
+
+Da ideia ao fluxo certo, com IA.
 
 Aplicação local: catálogo de fragmentos, **seleção determinística**, pipeline em duas etapas com LLM (**Prompt Forger** → revisão humana → **especialista**).
 
@@ -108,14 +110,29 @@ LLM_API_KEY=sk-...
 LLM_MODEL=gpt-4o-mini
 ```
 
-**Groq** (OpenAI-compatible)
+**DeepSeek** (OpenAI-compatible; créditos na conta DeepSeek):
+
+```
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_API_KEY=sk-...
+LLM_MODEL=deepseek-v4-flash
+```
+
+(`deepseek-v4-pro` é mais forte. Não use o legado `deepseek-chat`.) Reinicie o backend após mudar o `.env`.
+
+**Groq** (OpenAI-compatible) — no free/dev, `llama-3.3-70b-versatile` foi **retirado** (HTTP 404). Use o substituto oficial:
 
 ```
 LLM_BASE_URL=https://api.groq.com/openai/v1
 LLM_API_KEY=gsk_...
-LLM_MODEL=openai/gpt-oss-20b
+LLM_MODEL=openai/gpt-oss-120b
+LLM_MAX_FRAGMENT_CHARS=32000
+WORKSPACE_MAX_CONTEXT_CHARS=48000
 ```
 
+(`openai/gpt-oss-20b` é rápido, mas fraco.) Alternativa na conta: `qwen/qwen3.8-27b`. Se 429, baixe os caps (`16000` / `24000`). Salto real de “cérebro” vs ChatGPT: OpenAI `gpt-4o-mini` ou `gpt-4o`.
+
+Uso que ajuda: especialista à mão se a sugestão errar; **Workspace + Agente + Sugerir diffs**; `@arquivo` / `@pasta/` pontual.
 Reinicie o `runserver` após mudar o `.env`. O badge **LLM · modelo** no topo da UI vem de `GET /api/health/` (`llm.model`, `llm.base_host`). Sem as três variáveis (`BASE_URL`, `API_KEY`, `MODEL`), a API responde em `mode: "preview"` com `ai_executed: false` (sem cobrança).
 
 Trocar Groq por **ChatGPT/OpenAI** (chave `sk-…` + plano/créditos) **não deixa o código mais enxuto** — a app já usa o mesmo adapter OpenAI-compatible. O que melhora é qualidade, cota e estabilidade do modelo. Com plano pago você pode subir `LLM_MAX_FRAGMENT_CHARS` (ex.: `24000`) se quiser mais contexto do `.md`; o restante (agente, workspace, diffs, confirmação humana) permanece igual.

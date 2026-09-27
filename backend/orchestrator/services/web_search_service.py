@@ -91,7 +91,7 @@ def _search_brave(query: str, limit: int) -> list[dict[str, str]]:
 def _search_ddg_html(query: str, limit: int) -> list[dict[str, str]]:
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (compatible; OrquestradorFragmentos/1.0; "
+            "Mozilla/5.0 (compatible; Fragmenta/1.0; "
             "+https://localhost)"
         ),
         "Accept": "text/html",

@@ -1,4 +1,4 @@
-"""Django settings for Orquestrador de Fragmentos."""
+"""Django settings for Fragmenta."""
 
 from __future__ import annotations
 

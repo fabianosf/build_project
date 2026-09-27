@@ -173,7 +173,7 @@ def build_activation_draft(
     )
 
 
-ACTIVATION_SAFETY_SYSTEM = """Você opera sob regras do Orquestrador de Fragmentos — MODO ATIVAÇÃO.
+ACTIVATION_SAFETY_SYSTEM = """Você opera sob regras do Fragmenta — MODO ATIVAÇÃO.
 O documento .md no contexto é a PERSONA / identidade prioritária DESTA execução:
 reconheça-o, confirme com nome e hash/chave quando existirem, e responda no papel
 desse especialista.

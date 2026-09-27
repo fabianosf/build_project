@@ -4,4 +4,4 @@ from django.apps import AppConfig
 class OrchestratorConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "orchestrator"
-    verbose_name = "Orquestrador de Fragmentos"
+    verbose_name = "Fragmenta"

@@ -57,6 +57,7 @@ const UI_STEPS = [
   { id: 2 as const, label: "Especialista" },
   { id: 3 as const, label: "Resposta" },
 ];
+void UI_STEPS;
 
 function FragmentCard({
   fragment,
@@ -242,6 +243,10 @@ export default function App() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [showCatalog, setShowCatalog] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [askStage, setAskStage] = useState<
+    null | "suggest" | "prepare" | "reply"
+  >(null);
   const [catalogFilter, setCatalogFilter] = useState("");
 
   const draftRef = useRef<HTMLTextAreaElement>(null);
@@ -396,6 +401,34 @@ export default function App() {
     return 1;
   }, [phase, runResult, suggestions]);
 
+  const inThread =
+    phase === "result" &&
+    (Boolean(runResult) ||
+      chatMessages.length > 0 ||
+      chatBusy ||
+      chatTyping);
+
+  const sourceName =
+    runResult?.fragment_name ||
+    activatedDoc?.name ||
+    selected?.name ||
+    null;
+
+  // Handlers do wizard legado — mantidos para reabrir projetos / fluxos internos.
+  void error;
+  void showDetails;
+  void setShowDetails;
+  void selectedPrereqs;
+  void handleSuggest;
+  void handleForge;
+  void handleActivateAndHelp;
+  void draftEditable;
+  void fragmentTruncated;
+  void ragInfo;
+  void handleEditDraft;
+  void handleBackToSpecialist;
+  void handleRun;
+
   const lastAssistantMarkdown = useMemo(() => {
     const fromChat = [...chatMessages]
       .reverse()
@@ -499,7 +532,7 @@ export default function App() {
       setDraftEditable(false);
       setActivationInfo(result.activation ?? null);
       if (result.mode === "activation") {
-        await openConversationAfterPrep(result);
+        await openConversationAfterPrep(result, selectedId);
       } else {
         setPhase("review");
       }
@@ -541,7 +574,7 @@ export default function App() {
       setDraftEditable(false);
       setActivationInfo(result.activation ?? null);
       if (result.mode === "activation") {
-        await openConversationAfterPrep(result);
+        await openConversationAfterPrep(result, pick);
       } else {
         setPhase("review");
       }
@@ -555,8 +588,13 @@ export default function App() {
     }
   }
 
-  async function openConversationAfterPrep(forge: ForgeResponse) {
-    if (!selectedId) return;
+  async function openConversationAfterPrep(
+    forge: ForgeResponse,
+    fragmentId?: string | null,
+  ) {
+    const fid = fragmentId || selectedId;
+    if (!fid) return;
+    setSelectedId(fid);
     setPipelineError(null);
     setChatBusy(true);
     setChatTyping(true);
@@ -585,7 +623,7 @@ export default function App() {
       let gotToken = false;
       await chatContinueStream(
         {
-          fragmentId: selectedId,
+          fragmentId: fid,
           message:
             "Confirme o reconhecimento/ativação deste documento (cite nome e hash se houver) e declare-se pronto. Em seguida analise o pedido e anexos do usuário; aguarde perguntas.",
           history: [],
@@ -710,7 +748,10 @@ export default function App() {
             }
             setPipelineError(error);
             setPipelineRetryable(Boolean(info?.retryable) || isRetryableError(error));
-            setPhase("review");
+            setPhase("select");
+            setAskStage(null);
+            setChatMessages([]);
+            setRunResult(null);
           },
         },
         abort.signal,
@@ -723,11 +764,85 @@ export default function App() {
       }
       const msg = err instanceof Error ? err.message : "Erro ao iniciar conversa";
       setPipelineError(msg);
-      setPhase("review");
+      setPhase("select");
+      setAskStage(null);
+      setChatMessages([]);
+      setRunResult(null);
     } finally {
       if (chatAbortRef.current === abort) chatAbortRef.current = null;
       setChatBusy(false);
       setChatTyping(false);
+    }
+  }
+
+  /** Home estilo Perplexity: sugerir especialista → preparar → abrir thread. */
+  async function handleAskHome(event: FormEvent) {
+    event.preventDefault();
+    const text = requestText.trim();
+    if (!text && pendingAttachments.length === 0) {
+      setSuggestError("Digite o pedido ou anexe um arquivo.");
+      return;
+    }
+    setSuggesting(true);
+    setPipelineBusy(true);
+    setAskStage(selectedId ? "prepare" : "suggest");
+    setSuggestError(null);
+    setPipelineError(null);
+    setShowMoreMenu(false);
+    const attachments = pendingAttachments.map((a) => ({
+      name: a.name,
+      mime: a.mime,
+      text: a.text,
+      data_base64: a.data_base64,
+    }));
+    try {
+      let pick = selectedId;
+      if (!pick) {
+        setAskStage("suggest");
+        const result = await suggestFragments(text, attachments);
+        setSuggestions(result.suggestions);
+        setSuggestMeta({
+          intents: result.intents_detected,
+          stacks: result.stacks_detected,
+          mode: result.mode ?? "deterministic",
+          aiInterpreted: Boolean(result.ai_interpreted),
+          warning: result.warning ?? null,
+          interpretation: result.interpretation ?? null,
+          projectSniff: result.project_sniff ?? null,
+          autoPick: result.auto_pick ?? null,
+          autoActivateRecommended: Boolean(result.auto_activate_recommended),
+        });
+        pick = result.auto_pick || result.suggestions[0]?.id || null;
+        if (pick) setSelectedId(pick);
+        if (!pick) {
+          setShowCatalog(true);
+          setAskStage(null);
+          setSuggestError(
+            "Nenhuma sugestão automática. Escolha um especialista e pergunte de novo.",
+          );
+          return;
+        }
+      }
+      setSelectedId(pick);
+      setAskStage("prepare");
+      const forge = await forgeDraft(text, pick, attachments);
+      setForgeInfo(forge);
+      setDraft(forge.draft);
+      setDraftEditable(false);
+      setActivationInfo(forge.activation ?? null);
+      setAskStage("reply");
+      await openConversationAfterPrep(forge, pick);
+    } catch (err) {
+      setPipelineError(formatLlmError(err));
+      setPipelineRetryable(isRetryableError(err));
+      setSuggestError(
+        err instanceof Error ? err.message : "Não foi possível iniciar",
+      );
+      setAskStage(null);
+    } finally {
+      setSuggesting(false);
+      setPipelineBusy(false);
+      setAskStage(null);
     }
   }
 
@@ -782,6 +897,8 @@ export default function App() {
     setChatWarning(null);
     setPendingAttachments([]);
     setFragmentTruncated(false);
+    setAskStage(null);
+    setShowMoreMenu(false);
   }
 
   async function handleRun() {
@@ -1494,66 +1611,153 @@ export default function App() {
   }
 
   return (
-    <div className="page">
-      <header className="hero">
+    <div className={`page${inThread ? " page-thread" : " page-home"}`}>
+      <header className={inThread ? "topbar" : "hero hero-home"}>
         <div className="hero-top">
-          <p className="eyebrow">Orquestrador</p>
+          {inThread ? (
+            <button
+              type="button"
+              className="brand-btn"
+              onClick={handleNewRequest}
+            >
+              <span className="eyebrow">Fragmenta</span>
+            </button>
+          ) : (
+            <span className="hero-top-spacer" aria-hidden />
+          )}
           <div className="hero-top-right">
-            {llmHealth ? (
-              <span
-                className={`llm-badge${llmHealth.configured ? " llm-ok" : " llm-off"}`}
-                title={llmHealth.note}
-              >
-                {llmHealth.configured
-                  ? `LLM · ${llmHealth.model ?? "?"}`
-                  : "LLM · prévia"}
+            {inThread && sourceName ? (
+              <span className="source-chip" title="Especialista em uso">
+                Fonte · {sourceName}
               </span>
             ) : null}
-            <span
-              className={`llm-badge${workspaceMeta?.enabled ? " llm-ok" : " llm-off"}`}
-              title={
-                workspaceMeta?.enabled
-                  ? `WORKSPACE_ROOT ativo (${workspaceMeta.approx_files ?? "?"} arquivos)`
-                  : "Defina WORKSPACE_ROOT no .env para ler/aplicar no disco"
-              }
-            >
-              {workspaceMeta?.enabled
-                ? `Workspace · ${workspaceMeta.root_name ?? "on"}`
-                : "Workspace · off"}
-            </span>
-            <button
-              type="button"
-              className="btn-ghost"
-              aria-expanded={showCatalog}
-              aria-controls="catalog-drawer"
-              onClick={() => setShowCatalog((v) => !v)}
-              title="Listar todos os fragmentos/especialistas"
-            >
-              {showCatalog
-                ? "Ocultar especialistas"
-                : `Especialistas (${fragmentCount || "…"})`}
-            </button>
-            <button
-              type="button"
-              className="btn-ghost"
-              aria-expanded={showAdvanced}
-              onClick={() => setShowAdvanced((v) => !v)}
-            >
-              {showAdvanced ? "Fechar" : "Avançado"}
-            </button>
+            {inThread ? (
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={handleNewRequest}
+              >
+                Nova pergunta
+              </button>
+            ) : null}
+            <div className="more-wrap">
+              <button
+                type="button"
+                className="btn-ghost"
+                aria-expanded={showMoreMenu}
+                onClick={() => setShowMoreMenu((v) => !v)}
+              >
+                {showMoreMenu ? "Fechar" : "Mais"}
+              </button>
+              {showMoreMenu ? (
+                <div className="more-menu" role="menu">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowCatalog(true);
+                      setShowMoreMenu(false);
+                    }}
+                  >
+                    Especialistas ({fragmentCount || "…"})
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowHistory(true);
+                      setShowAdvanced(true);
+                      setShowMoreMenu(false);
+                    }}
+                  >
+                    Projetos ({history.length})
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowAdvanced((v) => !v);
+                    }}
+                  >
+                    {showAdvanced ? "Ocultar avançado" : "Avançado"}
+                  </button>
+                  <div className="more-toggles" role="group" aria-label="Opções">
+                    <label className="more-toggle">
+                      <input
+                        type="checkbox"
+                        checked={webSearchOn}
+                        disabled={webSearchMeta?.enabled === false}
+                        onChange={(e) => setWebSearchOn(e.target.checked)}
+                      />
+                      Buscar na web
+                    </label>
+                    <label className="more-toggle">
+                      <input
+                        type="checkbox"
+                        checked={useWorkspaceOn}
+                        disabled={!workspaceMeta?.enabled}
+                        onChange={(e) => setUseWorkspaceOn(e.target.checked)}
+                      />
+                      Usar workspace
+                    </label>
+                    <label className="more-toggle">
+                      <input
+                        type="checkbox"
+                        checked={includeGitOn}
+                        disabled={
+                          !workspaceMeta?.enabled ||
+                          !runRecipes.some((r) => r.group === "git" && r.ready)
+                        }
+                        onChange={(e) => setIncludeGitOn(e.target.checked)}
+                      />
+                      Incluir Git
+                    </label>
+                    <label className="more-toggle">
+                      <input
+                        type="checkbox"
+                        checked={agentToolsOn}
+                        disabled={!workspaceMeta?.enabled}
+                        onChange={(e) => setAgentToolsOn(e.target.checked)}
+                      />
+                      Agente
+                    </label>
+                    <label className="more-toggle">
+                      <input
+                        type="checkbox"
+                        checked={suggestDiffOn}
+                        onChange={(e) => setSuggestDiffOn(e.target.checked)}
+                      />
+                      Sugerir diffs
+                    </label>
+                  </div>
+                  {llmHealth ? (
+                    <p className="more-meta">
+                      LLM ·{" "}
+                      {llmHealth.configured ? llmHealth.model ?? "?" : "prévia"}
+                    </p>
+                  ) : null}
+                  <p className="more-meta">
+                    Workspace ·{" "}
+                    {workspaceMeta?.enabled
+                      ? workspaceMeta.root_name ?? "on"
+                      : "off"}
+                  </p>
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
-        <h1>Orquestrador de Fragmentos</h1>
-        <p className="lede">
-          Descreva o que precisa; o app escolhe o especialista e gera a
-          resposta.
-        </p>
-        {workspaceMeta && !workspaceMeta.enabled ? (
+        {!inThread ? (
+          <>
+            <h1>Fragmenta</h1>
+            <p className="lede">Da ideia ao fluxo certo, com IA.</p>
+          </>
+        ) : null}
+        {workspaceMeta && !workspaceMeta.enabled && !inThread ? (
           <aside className="workspace-onboard" role="status">
-            <strong>Workspace desligado.</strong> Para ler/aplicar diffs no
-            disco, defina{" "}
-            <code>WORKSPACE_ROOT=/caminho/absoluto/do/projeto</code> no{" "}
-            <code>.env</code> e reinicie o backend.
+            <strong>Workspace desligado.</strong> Defina{" "}
+            <code>WORKSPACE_ROOT</code> no <code>.env</code> para ler/aplicar
+            diffs.
           </aside>
         ) : null}
         {showAdvanced ? (
@@ -1570,21 +1774,9 @@ export default function App() {
               {data ? (
                 <span className="meta-line">
                   v{data.catalog_version} · {fragmentCount} especialistas
-                  {typeof data.auto_count === "number"
-                    ? ` · ${data.auto_count} auto`
-                    : ""}
                 </span>
               ) : null}
             </div>
-            <button
-              type="button"
-              className="btn-link"
-              onClick={() => setShowHistory((v) => !v)}
-            >
-              {showHistory
-                ? "Ocultar projetos"
-                : `Projetos (${history.length})`}
-            </button>
           </div>
         ) : null}
       </header>
@@ -1599,12 +1791,15 @@ export default function App() {
         <section className="history-panel" aria-label="Projetos locais">
           <div className="section-head">
             <h2>Projetos</h2>
-            <span className="count">{history.length}</span>
+            <button
+              type="button"
+              className="btn-link"
+              onClick={() => setShowHistory(false)}
+            >
+              Fechar
+            </button>
           </div>
-          <p className="meta-line">
-            Conversas salvas neste navegador — reabra e continue com o mesmo
-            especialista.
-          </p>
+          <p className="meta-line">Conversas salvas neste navegador.</p>
           {history.length === 0 ? (
             <p className="meta-line">Nenhum projeto ainda.</p>
           ) : (
@@ -1622,9 +1817,7 @@ export default function App() {
                       <span className="history-title">
                         {session.fragmentName}
                       </span>
-                      <span className="history-preview">
-                        {session.title}
-                      </span>
+                      <span className="history-preview">{session.title}</span>
                       <span className="history-meta">
                         {turnCountLabel(session)} ·{" "}
                         {new Date(session.updatedAt).toLocaleString()}
@@ -1670,28 +1863,179 @@ export default function App() {
         </section>
       ) : null}
 
-      <nav className="stepper stepper-simple" aria-label="Progresso">
-        {UI_STEPS.map((step, index) => (
-          <span key={step.id} className="stepper-item">
-            <span
-              className={`step-pill${
-                uiStep === step.id
-                  ? " step-current"
-                  : uiStep > step.id
-                    ? " step-done"
-                    : ""
-              }`}
-            >
-              {step.id}. {step.label}
-            </span>
-            {index < UI_STEPS.length - 1 ? (
-              <span className="step-arrow" aria-hidden>
-                →
-              </span>
+      {!inThread ? (
+        <section className="home-shell" aria-label="Perguntar">
+          <form className="home-composer" onSubmit={handleAskHome}>
+            <label htmlFor="pedido-home" className="sr-only">
+              Sua pergunta
+            </label>
+            <textarea
+              id="pedido-home"
+              rows={3}
+              value={requestText}
+              disabled={suggesting || pipelineBusy}
+              onChange={(e) => setRequestText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  e.currentTarget.form?.requestSubmit();
+                }
+              }}
+              placeholder="O que você quer fazer?"
+            />
+            {pendingAttachments.length > 0 ? (
+              <ul className="attach-chips">
+                {pendingAttachments.map((a) => (
+                  <li key={a.id}>
+                    <span>{a.name}</span>
+                    <button
+                      type="button"
+                      className="btn-link"
+                      onClick={() =>
+                        setPendingAttachments((prev) =>
+                          prev.filter((x) => x.id !== a.id),
+                        )
+                      }
+                    >
+                      remover
+                    </button>
+                  </li>
+                ))}
+              </ul>
             ) : null}
-          </span>
-        ))}
-      </nav>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".txt,.md,.json,.csv,.pdf,.docx,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp,.doc,.py,.ts,.tsx,.js,.jsx"
+              className="sr-only"
+              onChange={(e) => handleFilesSelected(e.target.files)}
+            />
+            <div className="home-composer-actions">
+              <button
+                type="button"
+                className="btn-ghost"
+                disabled={suggesting || pipelineBusy}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                Anexar
+              </button>
+              <button
+                type="submit"
+                className="btn-ask"
+                disabled={
+                  suggesting ||
+                  pipelineBusy ||
+                  (!requestText.trim() && pendingAttachments.length === 0)
+                }
+              >
+                {suggesting || pipelineBusy ? "Pensando…" : "Perguntar"}
+              </button>
+            </div>
+            {askStage ? (
+              <div className="home-loading" role="status" aria-live="polite">
+                <p className="home-loading-title">
+                  {askStage === "suggest"
+                    ? "Escolhendo especialista…"
+                    : askStage === "prepare"
+                      ? "Preparando contexto…"
+                      : "Respondendo…"}
+                </p>
+                <ul className="home-loading-steps">
+                  <li className={askStage ? "done" : ""}>Entender o pedido</li>
+                  <li
+                    className={
+                      askStage === "prepare" || askStage === "reply"
+                        ? "done"
+                        : askStage === "suggest"
+                          ? "current"
+                          : ""
+                    }
+                  >
+                    Escolher especialista
+                  </li>
+                  <li
+                    className={
+                      askStage === "reply"
+                        ? "current"
+                        : askStage === "prepare"
+                          ? ""
+                          : ""
+                    }
+                  >
+                    Gerar resposta
+                  </li>
+                </ul>
+              </div>
+            ) : null}
+            {!askStage ? (
+              <div className="home-examples" role="group" aria-label="Exemplos">
+                {REQUEST_EXAMPLES.slice(0, 4).map((ex) => (
+                  <button
+                    key={ex.id}
+                    type="button"
+                    className="example-chip"
+                    disabled={suggesting || pipelineBusy}
+                    onClick={() => applyRequestExample(ex.id)}
+                  >
+                    {ex.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {selectedId && selected ? (
+              <p className="meta-line home-source-hint">
+                Especialista: <strong>{selected.name}</strong>
+                {" · "}
+                <button
+                  type="button"
+                  className="btn-link"
+                  onClick={() => setShowCatalog(true)}
+                >
+                  trocar
+                </button>
+              </p>
+            ) : (
+              <p className="meta-line home-source-hint">
+                <button
+                  type="button"
+                  className="btn-link"
+                  onClick={() => setShowCatalog(true)}
+                >
+                  Escolher especialista
+                </button>{" "}
+                (opcional)
+              </p>
+            )}
+            {suggestError ? (
+              <p className="status error" role="alert">
+                {suggestError}
+                {pipelineRetryable ? (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      className="btn-link"
+                      onClick={() => {
+                        setSuggestError(null);
+                        setPipelineError(null);
+                        setPipelineRetryable(false);
+                      }}
+                    >
+                      ok
+                    </button>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
+            {pipelineError && !inThread ? (
+              <p className="status error" role="alert">
+                {pipelineError}
+              </p>
+            ) : null}
+          </form>
+        </section>
+      ) : null}
 
       {showCatalog ? (
         <section
@@ -1754,587 +2098,18 @@ export default function App() {
         </section>
       ) : null}
 
-      {uiStep === 1 ? (
-        <section className="step-panel request-panel">
-          <form onSubmit={handleSuggest}>
-            <label htmlFor="pedido" className="field-label">
-              Pedido
-            </label>
-            <div className="examples" role="group" aria-label="Exemplos">
-              {REQUEST_EXAMPLES.map((ex) => (
-                <button
-                  key={ex.id}
-                  type="button"
-                  className="example-chip"
-                  disabled={suggesting}
-                  onClick={() => applyRequestExample(ex.id)}
-                >
-                  {ex.label}
-                </button>
-              ))}
-            </div>
-            <textarea
-              id="pedido"
-              rows={4}
-              value={requestText}
-              onChange={(e) => setRequestText(e.target.value)}
-              placeholder="Pedido ou anexe um arquivo…"
-            />
-            {pendingAttachments.length > 0 ? (
-              <ul className="attach-chips">
-                {pendingAttachments.map((a) => (
-                  <li key={a.id}>
-                    <span>{a.name}</span>
-                    <button
-                      type="button"
-                      className="btn-link"
-                      onClick={() =>
-                        setPendingAttachments((prev) =>
-                          prev.filter((x) => x.id !== a.id),
-                        )
-                      }
-                    >
-                      remover
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept=".txt,.md,.json,.csv,.pdf,.docx,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp,.doc,.py,.ts,.tsx,.js,.jsx"
-              className="sr-only"
-              onChange={(e) => handleFilesSelected(e.target.files)}
-            />
-            <input
-              ref={folderInputRef}
-              type="file"
-              className="sr-only"
-              multiple
-              {...({ webkitdirectory: "", directory: "" } as Record<
-                string,
-                string
-              >)}
-              onChange={(e) => void handleFolderSelected(e.target.files)}
-            />
-            <div className="composer-toggles">
-              <label className="toggle-chip">
-                <input
-                  type="checkbox"
-                  checked={webSearchOn}
-                  disabled={webSearchMeta?.enabled === false}
-                  onChange={(e) => setWebSearchOn(e.target.checked)}
-                />
-                Buscar na web
-              </label>
-              <label className="toggle-chip">
-                <input
-                  type="checkbox"
-                  checked={useWorkspaceOn}
-                  disabled={!workspaceMeta?.enabled}
-                  onChange={(e) => setUseWorkspaceOn(e.target.checked)}
-                />
-                Usar workspace
-              </label>
-              <label className="toggle-chip">
-                <input
-                  type="checkbox"
-                  checked={includeGitOn}
-                  disabled={
-                    !workspaceMeta?.enabled ||
-                    !runRecipes.some((r) => r.group === "git" && r.ready)
-                  }
-                  onChange={(e) => setIncludeGitOn(e.target.checked)}
-                />
-                Incluir Git
-              </label>
-              <label className="toggle-chip">
-                <input
-                  type="checkbox"
-                  checked={agentToolsOn}
-                  disabled={!workspaceMeta?.enabled}
-                  onChange={(e) => setAgentToolsOn(e.target.checked)}
-                />
-                Agente
-              </label>
-              <label className="toggle-chip">
-                <input
-                  type="checkbox"
-                  checked={suggestDiffOn}
-                  onChange={(e) => setSuggestDiffOn(e.target.checked)}
-                />
-                Sugerir diffs
-              </label>
-            </div>
-            {folderHint ? (
-              <p className="meta-line" role="status">
-                {folderHint}
-              </p>
-            ) : null}
-            <div className="form-actions form-actions-primary">
-              <button
-                type="submit"
-                disabled={
-                  suggesting ||
-                  (!requestText.trim() && pendingAttachments.length === 0)
-                }
-              >
-                {suggesting ? "Analisando…" : "Continuar"}
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={suggesting}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                Anexar
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={suggesting}
-                onClick={() => folderInputRef.current?.click()}
-                title="Seleciona arquivos de código da pasta (não grava no disco)"
-              >
-                Pasta local
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => setShowCatalog((v) => !v)}
-              >
-                {showCatalog ? "Ocultar catálogo" : "Listar especialistas"}
-              </button>
-            </div>
-          </form>
-          {selected ? (
-            <div className="selection-banner" aria-live="polite">
-              <p>
-                Selecionado: <strong>{selected.name}</strong>
-                {selected.filename ? (
-                  <>
-                    {" "}
-                    · <code>{selected.filename}</code>
-                  </>
-                ) : null}
-              </p>
-              {selectedPrereqs.length > 0 ? (
-                <div className="prereq-warning" role="status">
-                  {selectedPrereqs.map((p) => (
-                    <p key={p.code}>{p.message}</p>
-                  ))}
-                </div>
-              ) : null}
-              <div className="form-actions form-actions-primary">
-                <button
-                  type="button"
-                  disabled={
-                    pipelineBusy ||
-                    !selectedId ||
-                    (!requestText.trim() && pendingAttachments.length === 0)
-                  }
-                  onClick={() => void handleForge()}
-                  title={
-                    !requestText.trim() && pendingAttachments.length === 0
-                      ? "Escreva um pedido acima antes de preparar"
-                      : "Preparar conversa com este especialista"
-                  }
-                >
-                  {pipelineBusy ? "Preparando…" : "Preparar com este"}
-                </button>
-              </div>
-            </div>
-          ) : null}
-          {pipelineError && uiStep === 1 ? (
-            <p className="status error" role="alert">
-              {pipelineError}
-            </p>
-          ) : null}
-          {suggestError ? (
-            <p className="status error" role="alert">
-              {suggestError}
-            </p>
-          ) : null}
-          {loading ? <p className="meta-line">Carregando catálogo…</p> : null}
-          {error ? (
-            <p className="status error" role="alert">
-              {error}
-            </p>
-          ) : null}
-        </section>
-      ) : null}
+      
 
-      {uiStep === 2 ? (
-        <section className="step-panel suggestions-panel">
-          <div className="section-head">
-            <h2>Escolha o especialista</h2>
-            <button
-              type="button"
-              className="btn-link"
-              onClick={handleNewRequest}
-            >
-              Voltar ao pedido
-            </button>
-          </div>
+      
 
-          {suggestMeta?.projectSniff &&
-          (suggestMeta.projectSniff.summary ||
-            suggestMeta.projectSniff.stacks?.length) ? (
-            <div className="sniff-banner status info" role="status">
-              <p>
-                Detectei:{" "}
-                <strong>
-                  {suggestMeta.projectSniff.summary ||
-                    suggestMeta.projectSniff.stacks.join(" + ")}
-                </strong>
-                {selected ? (
-                  <>
-                    {" "}
-                    · especialista sugerido: <strong>{selected.name}</strong>
-                  </>
-                ) : null}
-                {typeof suggestMeta.projectSniff.confidence === "number" ? (
-                  <span className="sniff-conf">
-                    {" "}
-                    (confiança{" "}
-                    {Math.round(suggestMeta.projectSniff.confidence * 100)}%)
-                  </span>
-                ) : null}
-              </p>
-              {suggestMeta.autoActivateRecommended ? (
-                <button
-                  type="button"
-                  className="btn-primary-inline"
-                  disabled={pipelineBusy || !selectedId}
-                  onClick={() => void handleActivateAndHelp()}
-                >
-                  {pipelineBusy ? "Ativando…" : "Ativar e ajudar"}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-
-          {suggestMeta?.aiInterpreted && suggestMeta.interpretation?.goal ? (
-            <div className="interpretation-box" aria-live="polite">
-              <h3>O que entendi</h3>
-              <p>{suggestMeta.interpretation.goal}</p>
-            </div>
-          ) : null}
-          {suggestMeta?.interpretation?.clarifying_question ? (
-            <p className="status warning" role="status">
-              {suggestMeta.interpretation.clarifying_question} Você pode voltar
-              e ajustar o pedido.
-            </p>
-          ) : null}
-          {suggestMeta?.warning ? (
-            <p className="status warning" role="status">
-              {suggestMeta.warning}
-            </p>
-          ) : null}
-
-          {suggestions && suggestions.length > 0 ? (
-            <ul className="suggestion-list">
-              {suggestions.map((s) => (
-                <li key={s.id}>
-                  <button
-                    type="button"
-                    className={`suggestion-item${
-                      selectedId === s.id ? " suggestion-selected" : ""
-                    }`}
-                    onClick={() => handleCatalogSelect(s.id)}
-                  >
-                    <div className="suggestion-top">
-                      <strong>{s.name}</strong>
-                      <span className="score">{s.category}</span>
-                    </div>
-                    <p>{s.explanation}</p>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="status">
-              Nenhuma sugestão automática. Abra o catálogo e escolha um
-              especialista.
-            </p>
-          )}
-
-          {selected ? (
-            <div className="selection-banner" aria-live="polite">
-              <p>
-                Selecionado: <strong>{selected.name}</strong>
-              </p>
-              {selectedPrereqs.length > 0 ? (
-                <div className="prereq-warning" role="status">
-                  {selectedPrereqs.map((p) => (
-                    <p key={p.code}>{p.message}</p>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          <div className="form-actions form-actions-primary">
-            <button
-              type="button"
-              disabled={
-                pipelineBusy ||
-                !selectedId ||
-                (!requestText.trim() && pendingAttachments.length === 0)
-              }
-              onClick={handleForge}
-            >
-              {pipelineBusy ? "Preparando…" : "Preparar"}
-            </button>
-            {suggestMeta?.autoActivateRecommended ? (
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={pipelineBusy || !selectedId}
-                onClick={() => void handleActivateAndHelp()}
-              >
-                Ativar e ajudar
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => setShowCatalog((v) => !v)}
-            >
-              {showCatalog
-                ? "Ocultar catálogo"
-                : "Ver todos os especialistas"}
-            </button>
-          </div>
-          {pipelineError ? (
-            <p className="status error" role="alert">
-              {pipelineError}
-              {pipelineRetryable ? (
-                <>
-                  {" "}
-                  <button
-                    type="button"
-                    className="btn-link"
-                    disabled={pipelineBusy}
-                    onClick={() => {
-                      setPipelineError(null);
-                      setPipelineRetryable(false);
-                      void handleForge();
-                    }}
-                  >
-                    Tentar de novo
-                  </button>
-                </>
-              ) : null}
-            </p>
-          ) : null}
-
-          <button
-            type="button"
-            className="btn-link details-toggle"
-            onClick={() => setShowDetails((v) => !v)}
-          >
-            {showDetails ? "Ocultar detalhes técnicos" : "Detalhes técnicos"}
-          </button>
-          {showDetails ? (
-            <div className="meta-bar" aria-live="polite">
-              <div className="chip-row">
-                <span className="chip-label">Stacks</span>
-                {suggestMeta?.stacks.length ? (
-                  suggestMeta.stacks.map((s) => (
-                    <span key={s} className="chip">
-                      {s}
-                    </span>
-                  ))
-                ) : (
-                  <span className="chip muted">—</span>
-                )}
-              </div>
-              <div className="chip-row">
-                <span className="chip-label">Arquivo</span>
-                <span className="chip">
-                  {selected ? <code>{selected.filename}</code> : "—"}
-                </span>
-                <span className="chip-label">Modo</span>
-                <span className="chip">
-                  {suggestMeta?.mode === "hybrid" ? "híbrido" : "regras"}
-                </span>
-              </div>
-              <p className="cost-note">
-                Sugestão ambígua pode usar +1 chamada; preparar+gerar = até 2.
-              </p>
-            </div>
-          ) : null}
-        </section>
-      ) : null}
-
-      {uiStep === 3 ? (
+      {inThread ? (
         <>
-          {activatedDoc && phase === "result" ? (
-            <section className="activation-banner" aria-live="polite">
-              <h2>Documento ativado</h2>
-              <p>
-                <strong>{activatedDoc.name}</strong>
-                {activatedDoc.hash ? (
-                  <>
-                    {" "}
-                    · <code>{activatedDoc.hash}</code>
-                  </>
-                ) : null}
-              </p>
-            </section>
-          ) : null}
-
-          {phase === "review" || (phase === "result" && !runResult) ? (
-            <section className="step-panel pipeline-panel">
-              <div className="section-head">
-                <h2>Revise e comece a conversar</h2>
-                <span className="count">
-                  {forgeInfo?.fragment_name ?? selected?.name}
-                </span>
-              </div>
-              {forgeInfo && !forgeInfo.ai_executed ? (
-                <p className="status warning" role="status">
-                  {forgeInfo.warning ??
-                    "Texto preparado localmente; a IA ainda não rodou."}
-                </p>
-              ) : null}
-              {activationInfo?.detected ? (
-                <div className="activation-box" aria-live="polite">
-                  <h3>Documento reconhecido</h3>
-                  <p>
-                    <strong>{activationInfo.name}</strong>
-                  </p>
-                  {activationInfo.activation_hash ? (
-                    <p className="meta-line">
-                      Hash: <code>{activationInfo.activation_hash}</code>
-                    </p>
-                  ) : null}
-                  {activationInfo.notes ? (
-                    <p className="meta-line">{activationInfo.notes}</p>
-                  ) : null}
-                </div>
-              ) : null}
-              <label htmlFor="draft" className="field-label">
-                Texto preparado (opcional editar)
-              </label>
-              <textarea
-                id="draft"
-                ref={draftRef}
-                rows={8}
-                value={draft}
-                readOnly={!draftEditable || phase === "result"}
-                onChange={(e) => setDraft(e.target.value)}
-              />
-              <div className="form-actions form-actions-primary">
-                <button
-                  type="button"
-                  disabled={pipelineBusy || phase === "result" || !draft.trim()}
-                  onClick={() => {
-                    void (async () => {
-                      setPipelineBusy(true);
-                      try {
-                        if (
-                          forgeInfo?.mode === "activation" ||
-                          activationInfo
-                        ) {
-                          await openConversationAfterPrep(
-                            forgeInfo ?? {
-                              draft,
-                              request: requestText.trim(),
-                              fragment_id: selectedId!,
-                              fragment_name: selected?.name ?? "",
-                              mode: "activation",
-                              ai_executed: false,
-                              activation: activationInfo,
-                            },
-                          );
-                        } else {
-                          await handleRun();
-                        }
-                      } finally {
-                        setPipelineBusy(false);
-                      }
-                    })();
-                  }}
-                >
-                  {pipelineBusy && phase === "review"
-                    ? "Abrindo conversa…"
-                    : forgeInfo?.mode === "activation" || activationInfo
-                      ? "Começar conversa"
-                      : "Gerar resposta"}
-                </button>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  disabled={phase === "result" || draftEditable}
-                  onClick={handleEditDraft}
-                >
-                  Editar
-                </button>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  disabled={pipelineBusy}
-                  onClick={handleBackToSpecialist}
-                >
-                  Voltar
-                </button>
-              </div>
-              {copyNotice ? <p className="meta-line">{copyNotice}</p> : null}
-              {pipelineError ? (
-                <p className="status error" role="alert">
-                  {pipelineError}
-                  {pipelineRetryable ? (
-                    <>
-                      {" "}
-                      <button
-                        type="button"
-                        className="btn-link"
-                        disabled={pipelineBusy}
-                        onClick={() => {
-                          setPipelineError(null);
-                          setPipelineRetryable(false);
-                          void handleRun();
-                        }}
-                      >
-                        Tentar de novo
-                      </button>
-                    </>
-                  ) : null}
-                </p>
-              ) : null}
-            </section>
-          ) : null}
-
-          {phase === "result" && runResult ? (
+          {runResult || chatMessages.length > 0 || chatBusy || chatTyping ? (
             <section className="step-panel pipeline-panel result-panel">
-              <div className="section-head">
-                <h2>Conversando com {runResult.fragment_name}</h2>
-                <span className="count">
-                  {activatedDoc ? "ativado" : "especialista"}
-                </span>
-              </div>
-              {!runResult.ai_executed ? (
+              {runResult && !runResult.ai_executed ? (
                 <p className="status warning" role="status">
                   {runResult.warning ??
                     "Modo prévia: a IA não foi executada."}
-                </p>
-              ) : null}
-              {ragInfo.used || runResult.rag_used ? (
-                <p className="status info" role="status">
-                  Contexto recuperado:{" "}
-                  {ragInfo.chunks || runResult.rag_chunks || 0} trechos do
-                  especialista (RAG).
-                </p>
-              ) : null}
-              {fragmentTruncated || runResult.fragment_truncated ? (
-                <p className="status warning" role="status">
-                  Documento grande: o contexto do `.md` foi compactado/recuperado
-                  para caber no limite do provedor (Groq). A conversa continua
-                  normalmente — digite abaixo o que quiser.
                 </p>
               ) : null}
 
@@ -2349,7 +2124,7 @@ export default function App() {
                       },
                       {
                         role: "assistant" as const,
-                        content: runResult.response,
+                        content: runResult?.response ?? "",
                       },
                     ]
                 ).map((turn, idx) => (

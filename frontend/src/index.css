@@ -1470,9 +1470,281 @@ button:disabled {
   border: 0;
 }
 
+/* —— Fragmenta · home estilo Perplexity —— */
+.page-home {
+  width: min(720px, calc(100% - 2rem));
+  min-height: calc(100vh - 2rem);
+  display: flex;
+  flex-direction: column;
+}
+
+.page-home .hero-home {
+  text-align: center;
+  margin-top: clamp(2rem, 12vh, 6rem);
+}
+
+.page-home .hero-home h1 {
+  font-size: clamp(2.4rem, 6vw, 3.4rem);
+  margin: 0.4rem 0 0.35rem;
+}
+
+.page-home .lede {
+  margin: 0 auto 1.75rem;
+  max-width: 22rem;
+}
+
+.page-thread {
+  width: min(760px, calc(100% - 2rem));
+  padding-bottom: 6rem;
+}
+
+.topbar {
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar .hero-top {
+  margin-bottom: 0;
+}
+
+.brand-btn {
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+}
+
+.brand-btn .eyebrow {
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+}
+
+.source-chip {
+  font-size: 0.78rem;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.more-wrap {
+  position: relative;
+}
+
+.more-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 40;
+  min-width: 14rem;
+  padding: 0.45rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-1) 92%, #000);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.more-menu button {
+  font: inherit;
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 0.55rem 0.65rem;
+  cursor: pointer;
+}
+
+.more-menu button:hover {
+  background: rgba(232, 242, 236, 0.08);
+}
+
+.more-meta {
+  margin: 0.25rem 0.65rem 0.15rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.more-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0.35rem 0;
+  padding: 0.45rem 0.35rem;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.more-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  color: var(--ink);
+  padding: 0.35rem 0.45rem;
+  cursor: pointer;
+}
+
+.hero-top-spacer {
+  width: 1px;
+  height: 1px;
+}
+
+.page-home .hero-home .hero-top {
+  justify-content: flex-end;
+}
+
+.home-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: center;
+  margin-top: 0.85rem;
+}
+
+.home-loading {
+  margin-top: 0.85rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.home-loading-title {
+  margin: 0 0 0.45rem;
+  font-size: 0.92rem;
+  color: var(--accent);
+}
+
+.home-loading-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.home-loading-steps li.done {
+  color: #c5e4d2;
+}
+
+.home-loading-steps li.current {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.home-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.home-composer {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0.85rem 1rem 0.75rem;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+}
+
+.home-composer textarea {
+  width: 100%;
+  resize: none;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.05rem;
+  line-height: 1.45;
+  outline: none;
+  min-height: 4.5rem;
+}
+
+.home-composer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--line);
+}
+
+.btn-ask {
+  margin-left: auto;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  border-radius: 999px;
+  padding: 0.55rem 1.15rem;
+  color: #14241c;
+  background: var(--accent);
+}
+
+.btn-ask:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.home-source-hint {
+  margin: 0.65rem 0 0;
+  text-align: center;
+}
+
+.page-thread .result-panel {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+.page-thread .thread-heading {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--muted);
+  margin: 0;
+}
+
+.page-thread .chat-panel {
+  margin-top: 0.5rem;
+}
+
+.page-thread .chat-composer-sticky {
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--card) 90%, transparent);
+  padding: 0.75rem 0.9rem;
+}
+
 @media (max-width: 640px) {
   .page {
     width: min(100% - 1.25rem, 1120px);
     padding-top: 1.5rem;
+  }
+
+  .page-home,
+  .page-thread {
+    width: min(100% - 1.25rem, 720px);
+  }
+
+  .home-composer-actions .btn-ask {
+    width: 100%;
+    margin-left: 0;
   }
 }
