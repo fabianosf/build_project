@@ -1,12 +1,26 @@
-"""Aggregate session telemetry from historyStore-shaped JSON exports."""
+"""Aggregate execution telemetry from historyStore / metrics JSON exports."""
 
 from __future__ import annotations
 
 from typing import Any
 
+# Fields that must never appear in a metrics-only export.
+SENSITIVE_KEYS = frozenset(
+    {
+        "request",
+        "response",
+        "messages",
+        "draft",
+        "attachmentNames",
+        "attachments",
+        "title",
+        "interpretationGoal",
+    }
+)
+
 
 def load_sessions(data: Any) -> list[dict[str, Any]]:
-    """Accept a list of sessions or ``{\"sessions\": [...]}``."""
+    """Accept a list of sessions or ``{\"sessions\": [...]}`` (legacy)."""
     if isinstance(data, list):
         return [s for s in data if isinstance(s, dict)]
     if isinstance(data, dict):
@@ -19,6 +33,74 @@ def load_sessions(data: Any) -> list[dict[str, Any]]:
     )
 
 
+def _looks_like_task(obj: dict[str, Any]) -> bool:
+    """Heuristic: task metrics object (not a full RunSession)."""
+    if "request" in obj or "messages" in obj:
+        return False
+    keys = set(obj.keys())
+    metric_hints = {
+        "msSuggest",
+        "msRun",
+        "tokensApprox",
+        "corrected",
+        "contextCompacted",
+        "suggestedId",
+        "chosenId",
+    }
+    return bool(keys & metric_hints)
+
+
+def extract_tasks(data: Any) -> list[dict[str, Any]]:
+    """
+    Normalize any supported export into a flat list of task metrics.
+
+    Supported shapes:
+    - ``{\"version\": 2, \"tasks\": [...]}`` metrics-only export
+    - ``{\"tasks\": [...]}``
+    - array of task objects
+    - array of sessions / ``{\"sessions\": [...]}`` (old historyStore)
+      using ``telemetryRuns`` or legacy single ``telemetry``
+    """
+    if isinstance(data, dict) and isinstance(data.get("tasks"), list):
+        return [t for t in data["tasks"] if isinstance(t, dict)]
+
+    if isinstance(data, list) and data and all(
+        isinstance(x, dict) and _looks_like_task(x) for x in data
+    ):
+        return [x for x in data if isinstance(x, dict)]
+
+    sessions = load_sessions(data)
+    tasks: list[dict[str, Any]] = []
+    for session in sessions:
+        runs = session.get("telemetryRuns")
+        if isinstance(runs, list) and runs:
+            for run in runs:
+                if isinstance(run, dict):
+                    tasks.append(run)
+            continue
+        tel = session.get("telemetry")
+        if isinstance(tel, dict):
+            tasks.append(tel)
+    return tasks
+
+
+def metrics_export_is_safe(data: Any) -> bool:
+    """True when payload has only metrics (no request/response/attachments)."""
+    if not isinstance(data, dict):
+        return False
+    if SENSITIVE_KEYS & set(data.keys()):
+        return False
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list):
+        return False
+    for task in tasks:
+        if not isinstance(task, dict):
+            return False
+        if SENSITIVE_KEYS & set(task.keys()):
+            return False
+    return True
+
+
 def _num(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -27,21 +109,16 @@ def _num(value: Any) -> float | None:
     return None
 
 
-def summarize_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
-    """Compute aggregate metrics across RunSession-like objects."""
-    session_count = len(sessions)
-    with_telemetry = 0
+def summarize_tasks(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compute aggregate metrics across execution tasks."""
+    task_count = len(tasks)
     corrected_n = 0
     suggest_vals: list[float] = []
     run_vals: list[float] = []
     total_tokens = 0.0
     compacted_n = 0
 
-    for session in sessions:
-        tel = session.get("telemetry")
-        if not isinstance(tel, dict):
-            continue
-        with_telemetry += 1
+    for tel in tasks:
         if tel.get("corrected"):
             corrected_n += 1
         if tel.get("contextCompacted"):
@@ -56,11 +133,9 @@ def summarize_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         if tok is not None:
             total_tokens += tok
 
-    corrected_rate = (
-        corrected_n / with_telemetry if with_telemetry else 0.0
-    )
+    corrected_rate = corrected_n / task_count if task_count else 0.0
     context_compacted_pct = (
-        (compacted_n / with_telemetry) * 100.0 if with_telemetry else 0.0
+        (compacted_n / task_count) * 100.0 if task_count else 0.0
     )
     avg_ms_suggest = (
         sum(suggest_vals) / len(suggest_vals) if suggest_vals else None
@@ -68,8 +143,10 @@ def summarize_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     avg_ms_run = sum(run_vals) / len(run_vals) if run_vals else None
 
     return {
-        "session_count": session_count,
-        "with_telemetry": with_telemetry,
+        "task_count": task_count,
+        # Aliases kept for older tests / callers
+        "session_count": task_count,
+        "with_telemetry": task_count,
         "corrected_rate": corrected_rate,
         "avg_ms_suggest": avg_ms_suggest,
         "avg_ms_run": avg_ms_run,
@@ -80,6 +157,16 @@ def summarize_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def summarize_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compat wrapper: treat session list as historyStore export."""
+    return summarize_tasks(extract_tasks(sessions))
+
+
+def summarize_payload(data: Any) -> dict[str, Any]:
+    """Summarize any supported JSON shape."""
+    return summarize_tasks(extract_tasks(data))
+
+
 def format_summary(summary: dict[str, Any]) -> str:
     """Human-readable aggregate for stdout."""
     avg_s = summary.get("avg_ms_suggest")
@@ -88,10 +175,10 @@ def format_summary(summary: dict[str, Any]) -> str:
     avg_r_txt = f"{avg_r:.1f}" if isinstance(avg_r, (int, float)) else "n/a"
     rate = float(summary.get("corrected_rate") or 0) * 100.0
     compact = float(summary.get("context_compacted_pct") or 0)
+    tasks = summary.get("task_count", summary.get("session_count", 0))
     lines = [
         "Resumo de telemetria (historyStore)",
-        f"  Tarefas (sessões): {summary.get('session_count', 0)}",
-        f"  Com telemetria: {summary.get('with_telemetry', 0)}",
+        f"  Tarefas (execuções): {tasks}",
         f"  Taxa corrected: {rate:.1f}%",
         f"  Média msSuggest: {avg_s_txt}",
         f"  Média msRun: {avg_r_txt}",

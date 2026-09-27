@@ -7,6 +7,24 @@ export type SessionTurn = {
   content: string;
 };
 
+/** One LLM/product execution (task). Metrics only — no request/response text. */
+export type TaskTelemetry = {
+  suggestedId: string | null;
+  chosenId: string | null;
+  msSuggest: number | null;
+  msRun: number | null;
+  tokensApprox: number | null;
+  /** True when the user picked a different specialist than auto-suggest. */
+  corrected: boolean;
+  /** Prompt size before/after context policy (history+attachments). */
+  contextCharsBefore: number | null;
+  contextCharsAfter: number | null;
+  contextCompacted: boolean;
+};
+
+/** @deprecated Prefer telemetryRuns; kept as last run for older readers. */
+export type SessionTelemetry = TaskTelemetry;
+
 export type RunSession = {
   id: string;
   createdAt: string;
@@ -32,27 +50,19 @@ export type RunSession = {
   /** Attachment filenames seen in the session (no file bytes). */
   attachmentNames: string[];
   documentRecognized: boolean;
-  /** Lightweight product telemetry (local only). */
+  /**
+   * One entry per execution/task in this project.
+   * Old localStorage may only have `telemetry` (single object).
+   */
+  telemetryRuns: TaskTelemetry[];
+  /** Last run (compat with format that stored a single telemetry object). */
   telemetry: SessionTelemetry | null;
-};
-
-export type SessionTelemetry = {
-  suggestedId: string | null;
-  chosenId: string | null;
-  msSuggest: number | null;
-  msRun: number | null;
-  tokensApprox: number | null;
-  /** True when the user picked a different specialist than auto-suggest. */
-  corrected: boolean;
-  /** Prompt size before/after context policy (history+attachments). */
-  contextCharsBefore: number | null;
-  contextCharsAfter: number | null;
-  contextCompacted: boolean;
 };
 
 const STORAGE_KEY = "orquestrador.history.v2";
 const LEGACY_KEY = "orquestrador.history.v1";
 const MAX_SESSIONS = 40;
+const MAX_TELEMETRY_RUNS = 100;
 
 function newId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -67,6 +77,39 @@ function deriveTitle(request: string, fragmentName: string): string {
     return base.length > 48 ? `${base.slice(0, 48)}…` : base;
   }
   return fragmentName || "Projeto";
+}
+
+function normalizeTaskTelemetry(raw: unknown): TaskTelemetry | null {
+  if (!raw || typeof raw !== "object") return null;
+  const t = raw as Record<string, unknown>;
+  return {
+    suggestedId: typeof t.suggestedId === "string" ? t.suggestedId : null,
+    chosenId: typeof t.chosenId === "string" ? t.chosenId : null,
+    msSuggest: typeof t.msSuggest === "number" ? t.msSuggest : null,
+    msRun: typeof t.msRun === "number" ? t.msRun : null,
+    tokensApprox: typeof t.tokensApprox === "number" ? t.tokensApprox : null,
+    corrected: Boolean(t.corrected),
+    contextCharsBefore:
+      typeof t.contextCharsBefore === "number" ? t.contextCharsBefore : null,
+    contextCharsAfter:
+      typeof t.contextCharsAfter === "number" ? t.contextCharsAfter : null,
+    contextCompacted: Boolean(t.contextCompacted),
+  };
+}
+
+function normalizeTelemetryRuns(item: Record<string, unknown>): TaskTelemetry[] {
+  const runs: TaskTelemetry[] = [];
+  if (Array.isArray(item.telemetryRuns)) {
+    for (const raw of item.telemetryRuns) {
+      const t = normalizeTaskTelemetry(raw);
+      if (t) runs.push(t);
+    }
+  }
+  if (runs.length === 0) {
+    const single = normalizeTaskTelemetry(item.telemetry);
+    if (single) runs.push(single);
+  }
+  return runs.slice(-MAX_TELEMETRY_RUNS);
 }
 
 function normalizeSession(raw: unknown): RunSession | null {
@@ -103,23 +146,9 @@ function normalizeSession(raw: unknown): RunSession | null {
   const attachmentNames = Array.isArray(item.attachmentNames)
     ? item.attachmentNames.filter((n): n is string => typeof n === "string")
     : [];
-  let telemetry: SessionTelemetry | null = null;
-  if (item.telemetry && typeof item.telemetry === "object") {
-    const t = item.telemetry as Record<string, unknown>;
-    telemetry = {
-      suggestedId: typeof t.suggestedId === "string" ? t.suggestedId : null,
-      chosenId: typeof t.chosenId === "string" ? t.chosenId : null,
-      msSuggest: typeof t.msSuggest === "number" ? t.msSuggest : null,
-      msRun: typeof t.msRun === "number" ? t.msRun : null,
-      tokensApprox: typeof t.tokensApprox === "number" ? t.tokensApprox : null,
-      corrected: Boolean(t.corrected),
-      contextCharsBefore:
-        typeof t.contextCharsBefore === "number" ? t.contextCharsBefore : null,
-      contextCharsAfter:
-        typeof t.contextCharsAfter === "number" ? t.contextCharsAfter : null,
-      contextCompacted: Boolean(t.contextCompacted),
-    };
-  }
+  const telemetryRuns = normalizeTelemetryRuns(item);
+  const telemetry =
+    telemetryRuns.length > 0 ? telemetryRuns[telemetryRuns.length - 1] : null;
   return {
     id: item.id,
     createdAt,
@@ -155,6 +184,7 @@ function normalizeSession(raw: unknown): RunSession | null {
     messages,
     attachmentNames,
     documentRecognized: Boolean(item.documentRecognized),
+    telemetryRuns,
     telemetry,
   };
 }
@@ -166,7 +196,7 @@ function readAll(): RunSession[] {
       const legacy = localStorage.getItem(LEGACY_KEY);
       if (legacy) {
         raw = legacy;
-        const migrated = (JSON.parse(legacy) as unknown[]);
+        const migrated = JSON.parse(legacy) as unknown[];
         const sessions = migrated
           .map(normalizeSession)
           .filter((s): s is RunSession => Boolean(s));
@@ -198,7 +228,15 @@ export function listSessions(): RunSession[] {
 
 export type SaveSessionInput = Omit<
   RunSession,
-  "id" | "createdAt" | "updatedAt" | "title" | "messages" | "attachmentNames" | "documentRecognized" | "telemetry"
+  | "id"
+  | "createdAt"
+  | "updatedAt"
+  | "title"
+  | "messages"
+  | "attachmentNames"
+  | "documentRecognized"
+  | "telemetry"
+  | "telemetryRuns"
 > & {
   id?: string;
   createdAt?: string;
@@ -207,7 +245,10 @@ export type SaveSessionInput = Omit<
   messages?: SessionTurn[];
   attachmentNames?: string[];
   documentRecognized?: boolean;
+  /** Replace last-compat field only (does not append a run). */
   telemetry?: SessionTelemetry | null;
+  /** Append one execution/task to telemetryRuns. */
+  appendTelemetry?: TaskTelemetry | null;
 };
 
 export function saveSession(input: SaveSessionInput): RunSession {
@@ -229,6 +270,26 @@ export function saveSession(input: SaveSessionInput): RunSession {
   const lastAssistant = [...messages]
     .reverse()
     .find((m) => m.role === "assistant");
+
+  let telemetryRuns = existing?.telemetryRuns
+    ? [...existing.telemetryRuns]
+    : [];
+  if (telemetryRuns.length === 0 && existing?.telemetry) {
+    telemetryRuns = [existing.telemetry];
+  }
+  if (input.appendTelemetry) {
+    telemetryRuns = [...telemetryRuns, input.appendTelemetry].slice(
+      -MAX_TELEMETRY_RUNS,
+    );
+  }
+
+  const telemetry =
+    telemetryRuns.length > 0
+      ? telemetryRuns[telemetryRuns.length - 1]
+      : input.telemetry !== undefined
+        ? input.telemetry
+        : existing?.telemetry ?? null;
+
   const session: RunSession = {
     id: input.id ?? existing?.id ?? newId(),
     createdAt: input.createdAt ?? existing?.createdAt ?? now,
@@ -254,7 +315,8 @@ export function saveSession(input: SaveSessionInput): RunSession {
       input.attachmentNames ?? existing?.attachmentNames ?? [],
     documentRecognized:
       input.documentRecognized ?? existing?.documentRecognized ?? false,
-    telemetry: input.telemetry ?? existing?.telemetry ?? null,
+    telemetryRuns,
+    telemetry,
   };
   const next = [
     session,
@@ -284,6 +346,73 @@ export function deleteSession(id: string): void {
   writeAll(readAll().filter((s) => s.id !== id));
 }
 
+/** Flatten all execution tasks from sessions (compat with single `telemetry`). */
+export function collectTelemetryTasks(
+  sessions: RunSession[],
+): TaskTelemetry[] {
+  const tasks: TaskTelemetry[] = [];
+  for (const s of sessions) {
+    if (s.telemetryRuns?.length) {
+      tasks.push(...s.telemetryRuns);
+    } else if (s.telemetry) {
+      tasks.push(s.telemetry);
+    }
+  }
+  return tasks;
+}
+
+const SENSITIVE_EXPORT_KEYS = [
+  "request",
+  "response",
+  "messages",
+  "draft",
+  "attachmentNames",
+  "attachments",
+  "title",
+  "interpretationGoal",
+] as const;
+
+/** Metrics-only payload for summarize_session_telemetry (no prompts/replies/files). */
+export function buildTelemetryExport(sessions: RunSession[]): {
+  version: number;
+  tasks: TaskTelemetry[];
+} {
+  const tasks = collectTelemetryTasks(sessions).map((t) => ({
+    suggestedId: t.suggestedId,
+    chosenId: t.chosenId,
+    msSuggest: t.msSuggest,
+    msRun: t.msRun,
+    tokensApprox: t.tokensApprox,
+    corrected: t.corrected,
+    contextCharsBefore: t.contextCharsBefore,
+    contextCharsAfter: t.contextCharsAfter,
+    contextCompacted: t.contextCompacted,
+  }));
+  return { version: 2, tasks };
+}
+
+export function exportTelemetryMetricsJson(sessions: RunSession[]): string {
+  return `${JSON.stringify(buildTelemetryExport(sessions), null, 2)}\n`;
+}
+
+/** True if a metrics export object has no sensitive project fields. */
+export function telemetryExportHasNoSensitiveData(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const obj = payload as Record<string, unknown>;
+  for (const key of SENSITIVE_EXPORT_KEYS) {
+    if (key in obj) return false;
+  }
+  if (!Array.isArray(obj.tasks)) return false;
+  for (const task of obj.tasks) {
+    if (!task || typeof task !== "object") return false;
+    const t = task as Record<string, unknown>;
+    for (const key of SENSITIVE_EXPORT_KEYS) {
+      if (key in t) return false;
+    }
+  }
+  return true;
+}
+
 export function sessionToMarkdown(session: RunSession): string {
   const lines = [
     `# Projeto — ${session.fragmentName}`,
@@ -295,6 +424,7 @@ export function sessionToMarkdown(session: RunSession): string {
     `- Modo sugestão: ${session.suggestMode ?? "—"}`,
     `- Modo execução: ${session.runMode}${session.aiExecuted ? " (IA)" : " (prévia)"}`,
     `- Turns: ${session.messages.length}`,
+    `- Tarefas (telemetria): ${session.telemetryRuns?.length ?? (session.telemetry ? 1 : 0)}`,
     "",
     "## Pedido inicial",
     "",
@@ -367,6 +497,11 @@ export function exportFilename(session: RunSession, ext: "md" | "json"): string 
     .replace(/^-|-$/g, "")
     .slice(0, 40);
   return `projeto-${stamp}-${slug || "fragmento"}.${ext}`;
+}
+
+export function telemetryExportFilename(): string {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  return `telemetria-metricas-${stamp}.json`;
 }
 
 export function turnCountLabel(session: RunSession): string {

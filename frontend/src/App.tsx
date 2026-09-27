@@ -34,10 +34,12 @@ import {
   deleteSession,
   downloadText,
   exportFilename,
+  exportTelemetryMetricsJson,
   listSessions,
   saveSession,
   sessionToJson,
   sessionToMarkdown,
+  telemetryExportFilename,
   turnCountLabel,
   type RunSession,
   type SessionTelemetry,
@@ -335,6 +337,8 @@ export default function App() {
     aiExecuted?: boolean;
     attachmentNames?: string[];
     documentRecognized?: boolean;
+    /** Append one execution task to telemetryRuns (LLM turn finished). */
+    recordTask?: boolean;
   }) {
     if (!selectedId) return null;
     const frag = findFragment(data, selectedId);
@@ -351,6 +355,7 @@ export default function App() {
         ...(opts?.attachmentNames ?? []),
       ]),
     );
+    const task = opts?.recordTask ? buildTelemetry() : null;
     const saved = saveSession({
       id: activeSessionId ?? undefined,
       request: requestText.trim() || messages.find((m) => m.role === "user")?.content || "",
@@ -374,8 +379,19 @@ export default function App() {
       documentRecognized:
         opts?.documentRecognized ??
         Boolean(activatedDoc || runResult?.document_recognized),
-      telemetry: buildTelemetry(),
+      appendTelemetry: task,
     });
+    if (task) {
+      // Keep specialist ids; clear per-execution counters for the next turn.
+      telemetryRef.current = {
+        ...telemetryRef.current,
+        msRun: null,
+        tokensApprox: null,
+        contextCharsBefore: null,
+        contextCharsAfter: null,
+        contextCompacted: false,
+      };
+    }
     setActiveSessionId(saved.id);
     refreshHistory();
     return saved;
@@ -786,6 +802,7 @@ export default function App() {
                 aiExecuted: payload.ai_executed,
                 attachmentNames: attachmentsPayload.map((a) => a.name),
                 documentRecognized: true,
+                recordTask: true,
               });
               return next;
             });
@@ -1110,6 +1127,7 @@ export default function App() {
         runMode: result.mode,
         aiExecuted: result.ai_executed,
         documentRecognized: Boolean(result.document_recognized),
+        recordTask: true,
       });
       setChatInput("");
       setChatError(null);
@@ -1203,6 +1221,14 @@ export default function App() {
     setActiveSessionId(null);
   }
 
+  function handleExportTelemetryMetrics() {
+    downloadText(
+      telemetryExportFilename(),
+      exportTelemetryMetricsJson(listSessions()),
+      "application/json;charset=utf-8",
+    );
+  }
+
   function handleDeleteSession(id: string, event: MouseEvent) {
     event.stopPropagation();
     deleteSession(id);
@@ -1270,6 +1296,10 @@ export default function App() {
       documentRecognized: Boolean(
         activatedDoc || runResult.document_recognized,
       ),
+      telemetryRuns: (() => {
+        const t = buildTelemetry();
+        return t ? [t] : [];
+      })(),
       telemetry: buildTelemetry(),
     };
   }
@@ -1518,6 +1548,7 @@ export default function App() {
                 runMode: payload.mode as "preview" | "llm",
                 aiExecuted: payload.ai_executed,
                 attachmentNames: attachmentsPayload.map((a) => a.name),
+                recordTask: true,
               });
               return next;
             });
@@ -2037,6 +2068,13 @@ export default function App() {
                 ))}
               </ul>
               <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={handleExportTelemetryMetrics}
+                >
+                  Exportar telemetria
+                </button>
                 <button
                   type="button"
                   className="btn-secondary"

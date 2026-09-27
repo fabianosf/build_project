@@ -1,4 +1,4 @@
-"""Print aggregate metrics from a historyStore JSON export."""
+"""Print aggregate metrics from historyStore or metrics-only JSON export."""
 
 from __future__ import annotations
 
@@ -9,23 +9,25 @@ from django.core.management.base import BaseCommand, CommandError
 
 from orchestrator.services.telemetry_summary import (
     format_summary,
-    load_sessions,
-    summarize_sessions,
+    summarize_payload,
 )
 
 
 class Command(BaseCommand):
     help = (
-        "Lê um JSON no formato do historyStore (localStorage) e imprime "
-        "resumo agregado: tarefas, corrected, msSuggest/msRun, tokens, "
-        "context_compacted."
+        "Lê JSON do historyStore (sessões) ou export de métricas "
+        "({version, tasks}) e imprime resumo por execução/tarefa: "
+        "contagem, corrected, msSuggest/msRun, tokens, contextCompacted."
     )
 
     def add_arguments(self, parser) -> None:
         parser.add_argument(
             "path",
             type=str,
-            help="Caminho do arquivo JSON exportado do historyStore",
+            help=(
+                "Caminho do JSON (array de sessões, {sessions}, "
+                "ou {version, tasks} só métricas)"
+            ),
         )
 
     def handle(self, *args, **options) -> None:
@@ -41,9 +43,8 @@ class Command(BaseCommand):
             raise CommandError(f"JSON inválido em {path}: {exc}") from exc
 
         try:
-            sessions = load_sessions(data)
+            summary = summarize_payload(data)
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
 
-        summary = summarize_sessions(sessions)
         self.stdout.write(format_summary(summary))
