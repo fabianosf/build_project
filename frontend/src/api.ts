@@ -396,6 +396,9 @@ export type ChatStreamHandlers = {
     mode: string;
     usage?: TurnUsage;
     tool_trace?: ToolTraceStep[];
+    warning?: string | null;
+    budget_exhausted?: boolean;
+    budget_reason?: string | null;
   }) => void;
   onError?: (error: string, info?: { code?: string; retryable?: boolean }) => void;
 };
@@ -520,6 +523,8 @@ export async function chatContinueStream(
             ok?: boolean;
             preview?: string;
             agent_tools?: boolean;
+            budget_exhausted?: boolean;
+            budget_reason?: string | null;
           };
           if (evt.type === "meta") {
             handlers.onMeta?.({
@@ -551,6 +556,9 @@ export async function chatContinueStream(
               mode: evt.mode ?? "llm",
               usage: evt.usage,
               tool_trace: evt.tool_trace,
+              warning: evt.warning,
+              budget_exhausted: evt.budget_exhausted,
+              budget_reason: evt.budget_reason,
             });
           } else if (evt.type === "error") {
             handlers.onError?.(evt.error ?? "Erro no stream.", {

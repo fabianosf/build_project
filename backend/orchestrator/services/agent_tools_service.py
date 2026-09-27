@@ -205,25 +205,78 @@ def iter_agent_rounds(
     messages: list[dict[str, Any]],
     *,
     max_rounds: int | None = None,
+    budget: Any | None = None,
 ) -> Iterator[dict[str, Any]]:
     """
     Yield {"type":"tool","step":{...}} as tools run, then {"type":"final","text":...}.
+    Optional ``budget`` (TaskBudget) gates each LLM call; on limit, yields final with
+    partial content and ``budget_exhausted`` / ``budget_reason``.
     """
-    from orchestrator.services.llm.base import LLMError
+    from orchestrator.services.llm.base import LLMError, approx_tokens_from_chars
+    from orchestrator.services.task_budget import (
+        TaskBudget,
+        estimate_messages_tokens,
+    )
 
     rounds = max_rounds if max_rounds is not None else agent_max_rounds()
+    budget = budget if budget is not None else TaskBudget.from_settings()
+    # Align round cap with this loop when an explicit max_rounds is passed.
+    if max_rounds is not None:
+        budget.max_rounds = rounds
     msgs = _ensure_agent_system(messages)
     used_tool_rounds = 0
+    last_partial = ""
+
+    def _stop_final(reason: str) -> dict[str, Any]:
+        budget.mark_stopped(reason)
+        text = (last_partial or "").strip()
+        if not text:
+            text = reason
+        elif reason not in text:
+            text = f"{text}\n\n---\n*{reason}*"
+        return {
+            "type": "final",
+            "text": text,
+            "messages": msgs,
+            "rounds": used_tool_rounds,
+            "budget_exhausted": True,
+            "budget_reason": reason,
+            "budget": budget.usage_snapshot(),
+        }
 
     for round_i in range(rounds):
+        prompt_tokens = estimate_messages_tokens(msgs)
+        blocked = budget.check_before_llm_call(
+            next_prompt_tokens=prompt_tokens,
+            count_as_agent_round=True,
+        )
+        if blocked:
+            yield _stop_final(blocked)
+            return
+
+        budget.begin_llm_call(prompt_tokens)
         try:
             answer = provider.complete(msgs)
         except LLMError:
             raise
+        completion_tokens = approx_tokens_from_chars(len(answer or ""))
+        gen_stop = budget.end_llm_call(completion_tokens)
+        last_partial = strip_tool_fence(answer) or (answer or "").strip()
+
         calls = parse_tool_calls(answer, limit=MAX_TOOLS_PER_ROUND)
         if not calls:
-            text = strip_tool_fence(answer) or answer.strip()
-            yield {"type": "final", "text": text, "messages": msgs}
+            text = last_partial
+            if gen_stop and gen_stop not in text:
+                text = f"{text}\n\n---\n*{gen_stop}*" if text else gen_stop
+            yield {
+                "type": "final",
+                "text": text,
+                "messages": msgs,
+                "rounds": used_tool_rounds,
+                "budget_exhausted": bool(gen_stop),
+                "budget_reason": gen_stop,
+                "budget": budget.usage_snapshot(),
+            }
             return
 
         used_tool_rounds += 1
@@ -246,37 +299,20 @@ def iter_agent_rounds(
                 f"Resultado da ferramenta {name}:\n"
                 f"{executed.get('result_text') or executed.get('error') or '(vazio)'}"
             )
+            last_partial = "\n\n".join(result_chunks)
         msgs.append({"role": "user", "content": "\n\n".join(result_chunks)})
 
-    # Exhausted tool rounds — force a final answer without tools
-    msgs.append(
-        {
-            "role": "user",
-            "content": (
-                "Limite de rodadas de ferramentas atingido. "
-                "Responda agora em markdown ao usuário com o que já sabe, "
-                "SEM bloco ```tool."
-            ),
-        }
+        if gen_stop:
+            yield _stop_final(gen_stop)
+            return
+
+    # Exhausted tool rounds without a plain answer — keep partial; do not spend
+    # another LLM call past the configured round budget.
+    reason = (
+        f"Limite de rodadas do agente ({rounds}) atingido. "
+        "Mantendo o resultado parcial."
     )
-    try:
-        answer = provider.complete(msgs)
-        final_text = strip_tool_fence(answer) or answer.strip()
-        if not final_text:
-            final_text = (
-                "Limite de rodadas do agente atingido. "
-                "Use os resultados das ferramentas acima ou refine o pedido."
-            )
-    except LLMError:
-        final_text = (
-            "Limite de rodadas do agente atingido sem resposta final."
-        )
-    yield {
-        "type": "final",
-        "text": final_text,
-        "messages": msgs,
-        "rounds": used_tool_rounds,
-    }
+    yield _stop_final(reason)
 
 
 def run_agent_rounds(
@@ -284,24 +320,36 @@ def run_agent_rounds(
     messages: list[dict[str, Any]],
     *,
     max_rounds: int | None = None,
+    budget: Any | None = None,
 ) -> dict[str, Any]:
     """
     Loop: complete → if tool fence(s), execute → append tool result → repeat.
-    Returns final_text, tool_trace, messages, rounds.
+    Returns final_text, tool_trace, messages, rounds, budget fields.
     """
     trace: list[dict[str, Any]] = []
     final_text = ""
     msgs = list(messages)
-    for ev in iter_agent_rounds(provider, messages, max_rounds=max_rounds):
+    budget_exhausted = False
+    budget_reason = None
+    budget_snap: dict[str, Any] | None = None
+    for ev in iter_agent_rounds(
+        provider, messages, max_rounds=max_rounds, budget=budget
+    ):
         if ev["type"] == "tool":
             trace.append(ev["step"])
         elif ev["type"] == "final":
             final_text = ev.get("text") or ""
             msgs = ev.get("messages") or msgs
+            budget_exhausted = bool(ev.get("budget_exhausted"))
+            budget_reason = ev.get("budget_reason")
+            budget_snap = ev.get("budget")
 
     return {
         "final_text": final_text,
         "tool_trace": trace,
         "messages": msgs,
         "rounds": len(trace),
+        "budget_exhausted": budget_exhausted,
+        "budget_reason": budget_reason,
+        "budget": budget_snap,
     }

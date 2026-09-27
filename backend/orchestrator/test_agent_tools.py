@@ -131,7 +131,7 @@ class AgentLoopTests(SimpleTestCase):
                 self.assertEqual(result["response"], "Resposta direta sem tool.")
                 self.assertEqual(result.get("tool_trace"), [])
 
-    def test_exhausted_rounds_forces_final(self) -> None:
+    def test_exhausted_rounds_keeps_partial(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "f.py").write_text("ok\n", encoding="utf-8")
@@ -142,7 +142,7 @@ class AgentLoopTests(SimpleTestCase):
                     "```"
                 )
                 fake = FakeLLMProvider(
-                    responses=[tool, "Resumo final após limite."]
+                    responses=[tool, "não deve ser chamado"]
                 )
                 out = run_agent_rounds(
                     fake,
@@ -153,7 +153,10 @@ class AgentLoopTests(SimpleTestCase):
                     max_rounds=1,
                 )
                 self.assertEqual(len(out["tool_trace"]), 1)
-                self.assertIn("Resumo final", out["final_text"])
+                self.assertTrue(out.get("budget_exhausted"))
+                self.assertIn("rodadas", out.get("budget_reason") or "")
+                self.assertIn("f.py", out["final_text"])
+                self.assertEqual(len(fake.calls), 1)
 
 
 @override_settings(

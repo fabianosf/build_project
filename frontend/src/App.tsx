@@ -40,6 +40,7 @@ import {
   sessionToMarkdown,
   turnCountLabel,
   type RunSession,
+  type SessionTelemetry,
   type SessionTurn,
 } from "./historyStore";
 import { FOLDER_MAX_FILES, pickFolderFiles } from "./folderPicker";
@@ -247,6 +248,21 @@ export default function App() {
   const [askStage, setAskStage] = useState<
     null | "suggest" | "prepare" | "reply"
   >(null);
+  /** After suggest: wait for Continuar/Trocar before spending LLM. */
+  const [awaitingConfirm, setAwaitingConfirm] = useState(false);
+  const telemetryRef = useRef<{
+    suggestedId: string | null;
+    chosenId: string | null;
+    msSuggest: number | null;
+    msRun: number | null;
+    tokensApprox: number | null;
+  }>({
+    suggestedId: null,
+    chosenId: null,
+    msSuggest: null,
+    msRun: null,
+    tokensApprox: null,
+  });
   const [catalogFilter, setCatalogFilter] = useState("");
 
   const draftRef = useRef<HTMLTextAreaElement>(null);
@@ -258,6 +274,24 @@ export default function App() {
 
   function refreshHistory() {
     setHistory(listSessions());
+  }
+
+  function buildTelemetry(): SessionTelemetry | null {
+    const t = telemetryRef.current;
+    if (!t.suggestedId && !t.chosenId && t.msSuggest == null && t.msRun == null) {
+      return null;
+    }
+    const chosen = t.chosenId || selectedId;
+    return {
+      suggestedId: t.suggestedId,
+      chosenId: chosen,
+      msSuggest: t.msSuggest,
+      msRun: t.msRun,
+      tokensApprox: t.tokensApprox,
+      corrected: Boolean(
+        t.suggestedId && chosen && t.suggestedId !== chosen,
+      ),
+    };
   }
 
   function persistProject(messages: SessionTurn[], opts?: {
@@ -305,6 +339,7 @@ export default function App() {
       documentRecognized:
         opts?.documentRecognized ??
         Boolean(activatedDoc || runResult?.document_recognized),
+      telemetry: buildTelemetry(),
     });
     setActiveSessionId(saved.id);
     refreshHistory();
@@ -686,10 +721,19 @@ export default function App() {
           },
           onDone: (payload) => {
             setChatTyping(false);
-            if (payload.usage) setLastUsage(payload.usage);
+            if (payload.usage) {
+              setLastUsage(payload.usage);
+              const approx =
+                (payload.usage.prompt_tokens_approx ?? 0) +
+                (payload.usage.completion_tokens_approx ?? 0);
+              telemetryRef.current.tokensApprox = approx || null;
+            }
             if (payload.tool_trace?.length) {
               setToolSteps(payload.tool_trace);
             }
+            const budgetWarn =
+              payload.budget_reason || payload.warning || null;
+            if (budgetWarn) setChatWarning(budgetWarn);
             setChatMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -716,6 +760,7 @@ export default function App() {
                     ai_executed: payload.ai_executed,
                     mode: payload.mode as "preview" | "llm",
                     status: "chatting",
+                    warning: budgetWarn ?? prev.warning,
                   }
                 : prev,
             );
@@ -775,7 +820,31 @@ export default function App() {
     }
   }
 
-  /** Home estilo Perplexity: sugerir especialista → preparar → abrir thread. */
+  /** Soft opt-in: only flip tools on when the pedido clearly asks for them. */
+  function maybeApplyToolHeuristics(text: string, hasAttachments: boolean) {
+    const lower = text.toLowerCase();
+    if (
+      !webSearchOn &&
+      /\b(pesquise|pesquisa|buscar na web|busca web|internet|google)\b/.test(
+        lower,
+      )
+    ) {
+      setWebSearchOn(true);
+    }
+    if (
+      !useWorkspaceOn &&
+      workspaceMeta?.enabled &&
+      (hasAttachments ||
+        contextPaths.length > 0 ||
+        /\b(workspace|neste repo|neste projeto|arquivos do projeto)\b/.test(
+          lower,
+        ))
+    ) {
+      setUseWorkspaceOn(true);
+    }
+  }
+
+  /** Home: suggest only → gate de confirmação (não gasta LLM ainda). */
   async function handleAskHome(event: FormEvent) {
     event.preventDefault();
     const text = requestText.trim();
@@ -783,22 +852,24 @@ export default function App() {
       setSuggestError("Digite o pedido ou anexe um arquivo.");
       return;
     }
+    maybeApplyToolHeuristics(text, pendingAttachments.length > 0);
     setSuggesting(true);
-    setPipelineBusy(true);
-    setAskStage(selectedId ? "prepare" : "suggest");
+    setAskStage("suggest");
     setSuggestError(null);
     setPipelineError(null);
     setShowMoreMenu(false);
+    setAwaitingConfirm(false);
     const attachments = pendingAttachments.map((a) => ({
       name: a.name,
       mime: a.mime,
       text: a.text,
       data_base64: a.data_base64,
     }));
+    const t0 = performance.now();
     try {
       let pick = selectedId;
-      if (!pick) {
-        setAskStage("suggest");
+      let suggested: string | null = null;
+      if (!pick || !suggestions?.length) {
         const result = await suggestFragments(text, attachments);
         setSuggestions(result.suggestions);
         setSuggestMeta({
@@ -812,19 +883,63 @@ export default function App() {
           autoPick: result.auto_pick ?? null,
           autoActivateRecommended: Boolean(result.auto_activate_recommended),
         });
-        pick = result.auto_pick || result.suggestions[0]?.id || null;
+        suggested = result.auto_pick || result.suggestions[0]?.id || null;
+        pick = suggested;
         if (pick) setSelectedId(pick);
         if (!pick) {
           setShowCatalog(true);
           setAskStage(null);
           setSuggestError(
-            "Nenhuma sugestão automática. Escolha um especialista e pergunte de novo.",
+            "Nenhuma sugestão automática. Escolha um especialista e confirme.",
           );
           return;
         }
+      } else {
+        suggested = suggestMeta?.autoPick || suggestions[0]?.id || pick;
       }
-      setSelectedId(pick);
-      setAskStage("prepare");
+      telemetryRef.current = {
+        ...telemetryRef.current,
+        suggestedId: suggested,
+        chosenId: pick,
+        msSuggest: Math.round(performance.now() - t0),
+        msRun: null,
+        tokensApprox: null,
+      };
+      setAskStage(null);
+      setAwaitingConfirm(true);
+    } catch (err) {
+      setSuggestError(
+        err instanceof Error ? err.message : "Não foi possível sugerir",
+      );
+      setAskStage(null);
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
+  /** Após Continuar: prepare + abrir thread (gasta LLM). */
+  async function handleConfirmContinue() {
+    const text = requestText.trim();
+    const pick = selectedId;
+    if (!pick) {
+      setSuggestError("Escolha um especialista.");
+      setShowCatalog(true);
+      return;
+    }
+    setAwaitingConfirm(false);
+    setPipelineBusy(true);
+    setAskStage("prepare");
+    setSuggestError(null);
+    setPipelineError(null);
+    telemetryRef.current.chosenId = pick;
+    const runStarted = performance.now();
+    const attachments = pendingAttachments.map((a) => ({
+      name: a.name,
+      mime: a.mime,
+      text: a.text,
+      data_base64: a.data_base64,
+    }));
+    try {
       const forge = await forgeDraft(text, pick, attachments);
       setForgeInfo(forge);
       setDraft(forge.draft);
@@ -832,18 +947,24 @@ export default function App() {
       setActivationInfo(forge.activation ?? null);
       setAskStage("reply");
       await openConversationAfterPrep(forge, pick);
+      telemetryRef.current.msRun = Math.round(performance.now() - runStarted);
     } catch (err) {
       setPipelineError(formatLlmError(err));
       setPipelineRetryable(isRetryableError(err));
       setSuggestError(
         err instanceof Error ? err.message : "Não foi possível iniciar",
       );
+      setAwaitingConfirm(true);
       setAskStage(null);
     } finally {
-      setSuggesting(false);
       setPipelineBusy(false);
       setAskStage(null);
     }
+  }
+
+  function handleConfirmSwap() {
+    setShowCatalog(true);
+    setAwaitingConfirm(true);
   }
 
   function handleEditDraft() {
@@ -899,6 +1020,14 @@ export default function App() {
     setFragmentTruncated(false);
     setAskStage(null);
     setShowMoreMenu(false);
+    setAwaitingConfirm(false);
+    telemetryRef.current = {
+      suggestedId: null,
+      chosenId: null,
+      msSuggest: null,
+      msRun: null,
+      tokensApprox: null,
+    };
   }
 
   async function handleRun() {
@@ -1098,6 +1227,7 @@ export default function App() {
       documentRecognized: Boolean(
         activatedDoc || runResult.document_recognized,
       ),
+      telemetry: buildTelemetry(),
     };
   }
 
@@ -1316,10 +1446,19 @@ export default function App() {
           },
           onDone: (payload) => {
             setChatTyping(false);
-            if (payload.usage) setLastUsage(payload.usage);
+            if (payload.usage) {
+              setLastUsage(payload.usage);
+              const approx =
+                (payload.usage.prompt_tokens_approx ?? 0) +
+                (payload.usage.completion_tokens_approx ?? 0);
+              telemetryRef.current.tokensApprox = approx || null;
+            }
             if (payload.tool_trace?.length) {
               setToolSteps(payload.tool_trace);
             }
+            const budgetWarn =
+              payload.budget_reason || payload.warning || null;
+            if (budgetWarn) setChatWarning(budgetWarn);
             setChatMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -1608,6 +1747,9 @@ export default function App() {
     setSelectedId(id);
     setSuggestError(null);
     setPipelineError(null);
+    if (awaitingConfirm) {
+      telemetryRef.current.chosenId = id;
+    }
   }
 
   return (
@@ -1968,7 +2110,84 @@ export default function App() {
                 </ul>
               </div>
             ) : null}
-            {!askStage ? (
+            {awaitingConfirm && !askStage ? (
+              <div className="confirm-card" role="region" aria-label="Confirmar especialista">
+                {(() => {
+                  const top =
+                    suggestions?.find((s) => s.id === selectedId) ||
+                    suggestions?.[0];
+                  const name =
+                    top?.name ||
+                    selected?.name ||
+                    selectedId ||
+                    "Especialista";
+                  const why =
+                    top?.explanation ||
+                    suggestMeta?.interpretation?.goal ||
+                    (suggestMeta?.intents?.length
+                      ? `intenção ${suggestMeta.intents.slice(0, 3).join(", ")}`
+                      : "melhor correspondência no catálogo");
+                  return (
+                    <>
+                      <p className="confirm-title">
+                        Indicado: <strong>{name}</strong>
+                      </p>
+                      <p className="confirm-why">Porque: {why}</p>
+                      {suggestMeta?.intents?.length ? (
+                        <p className="meta-line">
+                          Intenções: {suggestMeta.intents.join(", ")}
+                          {suggestMeta.stacks?.length
+                            ? ` · stacks: ${suggestMeta.stacks.join(", ")}`
+                            : ""}
+                        </p>
+                      ) : null}
+                      {suggestions && suggestions.length > 1 ? (
+                        <ul className="confirm-alts" aria-label="Alternativas">
+                          {suggestions.slice(0, 3).map((s) => (
+                            <li key={s.id}>
+                              <button
+                                type="button"
+                                className={
+                                  s.id === selectedId
+                                    ? "confirm-alt confirm-alt-active"
+                                    : "confirm-alt"
+                                }
+                                onClick={() => {
+                                  setSelectedId(s.id);
+                                  telemetryRef.current.chosenId = s.id;
+                                }}
+                              >
+                                {s.name}
+                                <span className="meta-line">{s.explanation}</span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      <div className="confirm-actions">
+                        <button
+                          type="button"
+                          className="btn-ask"
+                          disabled={pipelineBusy || !selectedId}
+                          onClick={() => void handleConfirmContinue()}
+                        >
+                          Continuar
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          disabled={pipelineBusy}
+                          onClick={handleConfirmSwap}
+                        >
+                          Trocar
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            ) : null}
+            {!askStage && !awaitingConfirm ? (
               <div className="home-examples" role="group" aria-label="Exemplos">
                 {REQUEST_EXAMPLES.slice(0, 4).map((ex) => (
                   <button

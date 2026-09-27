@@ -32,6 +32,18 @@ export type RunSession = {
   /** Attachment filenames seen in the session (no file bytes). */
   attachmentNames: string[];
   documentRecognized: boolean;
+  /** Lightweight product telemetry (local only). */
+  telemetry: SessionTelemetry | null;
+};
+
+export type SessionTelemetry = {
+  suggestedId: string | null;
+  chosenId: string | null;
+  msSuggest: number | null;
+  msRun: number | null;
+  tokensApprox: number | null;
+  /** True when the user picked a different specialist than auto-suggest. */
+  corrected: boolean;
 };
 
 const STORAGE_KEY = "orquestrador.history.v2";
@@ -87,6 +99,18 @@ function normalizeSession(raw: unknown): RunSession | null {
   const attachmentNames = Array.isArray(item.attachmentNames)
     ? item.attachmentNames.filter((n): n is string => typeof n === "string")
     : [];
+  let telemetry: SessionTelemetry | null = null;
+  if (item.telemetry && typeof item.telemetry === "object") {
+    const t = item.telemetry as Record<string, unknown>;
+    telemetry = {
+      suggestedId: typeof t.suggestedId === "string" ? t.suggestedId : null,
+      chosenId: typeof t.chosenId === "string" ? t.chosenId : null,
+      msSuggest: typeof t.msSuggest === "number" ? t.msSuggest : null,
+      msRun: typeof t.msRun === "number" ? t.msRun : null,
+      tokensApprox: typeof t.tokensApprox === "number" ? t.tokensApprox : null,
+      corrected: Boolean(t.corrected),
+    };
+  }
   return {
     id: item.id,
     createdAt,
@@ -122,6 +146,7 @@ function normalizeSession(raw: unknown): RunSession | null {
     messages,
     attachmentNames,
     documentRecognized: Boolean(item.documentRecognized),
+    telemetry,
   };
 }
 
@@ -164,7 +189,7 @@ export function listSessions(): RunSession[] {
 
 export type SaveSessionInput = Omit<
   RunSession,
-  "id" | "createdAt" | "updatedAt" | "title" | "messages" | "attachmentNames" | "documentRecognized"
+  "id" | "createdAt" | "updatedAt" | "title" | "messages" | "attachmentNames" | "documentRecognized" | "telemetry"
 > & {
   id?: string;
   createdAt?: string;
@@ -173,6 +198,7 @@ export type SaveSessionInput = Omit<
   messages?: SessionTurn[];
   attachmentNames?: string[];
   documentRecognized?: boolean;
+  telemetry?: SessionTelemetry | null;
 };
 
 export function saveSession(input: SaveSessionInput): RunSession {
@@ -219,6 +245,7 @@ export function saveSession(input: SaveSessionInput): RunSession {
       input.attachmentNames ?? existing?.attachmentNames ?? [],
     documentRecognized:
       input.documentRecognized ?? existing?.documentRecognized ?? false,
+    telemetry: input.telemetry ?? existing?.telemetry ?? null,
   };
   const next = [
     session,

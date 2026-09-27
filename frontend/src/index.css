@@ -1646,6 +1646,63 @@ button:disabled {
   font-weight: 600;
 }
 
+.confirm-card {
+  margin-top: 0.9rem;
+  padding: 0.9rem 1rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: rgba(212, 163, 92, 0.08);
+}
+
+.confirm-title {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.confirm-why {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.confirm-alts {
+  list-style: none;
+  margin: 0.5rem 0 0.75rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.confirm-alt {
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.confirm-alt-active {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: rgba(212, 163, 92, 0.14);
+}
+
+.confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.35rem;
+}
+
 .home-shell {
   flex: 1;
   display: flex;

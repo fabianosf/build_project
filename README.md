@@ -217,6 +217,8 @@ Reinicie o backend. O badge **Workspace · nome** aparece no topo; se estiver of
 
 **Agente (mini tool-loop)**: toggle **Agente** (precisa de workspace). Até `AGENT_MAX_ROUNDS` (padrão 5) rodadas; até 2 tools por rodada (`workspace_search`, `workspace_read`, `workspace_list`, `workspace_run`). Eventos SSE `tool` saem em tempo real durante o loop. Use **Parar** para cancelar. Apply de diff continua só com confirmação humana (por arquivo ou todos).
 
+**Orçamento por tarefa**: antes de cada chamada à LLM o backend verifica `AGENT_MAX_ROUNDS`, `TASK_MAX_PROMPT_TOKENS_APPROX` e `TASK_MAX_COMPLETION_TOKENS_APPROX` (tokens ≈ chars/4). Ao atingir o limite, interrompe sem descartar o resultado parcial e devolve `budget_reason` (também em `warning`). O fluxo Perguntar → conferir → Continuar não muda. Compactação de contexto fica para outra etapa.
+
 ## Fluxo na UI
 
 1 Pedido (exemplos + anexos/pasta) → 2 Sugestões → 3 Especialista → 4 Prompt Forger → 5 Revisão → 6 Resposta (chat + agente + Git + verificação + painel de diffs).

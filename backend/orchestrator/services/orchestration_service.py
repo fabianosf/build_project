@@ -832,12 +832,45 @@ def continue_chat(
 
     try:
         if prepared.get("agent_tools"):
-            agent_out = run_agent_rounds(provider, prepared["messages"])
+            from orchestrator.services.task_budget import TaskBudget
+
+            budget = TaskBudget.from_settings()
+            agent_out = run_agent_rounds(
+                provider, prepared["messages"], budget=budget
+            )
             answer = agent_out["final_text"]
             tool_trace = agent_out["tool_trace"]
+            budget_exhausted = bool(agent_out.get("budget_exhausted"))
+            budget_reason = agent_out.get("budget_reason")
+            budget_snap = agent_out.get("budget")
         else:
-            answer = provider.complete(prepared["messages"])
-            tool_trace = []
+            from orchestrator.services.task_budget import (
+                TaskBudget,
+                estimate_messages_tokens,
+            )
+            from orchestrator.services.llm.base import approx_tokens_from_chars
+
+            budget = TaskBudget.from_settings()
+            prompt_tokens = estimate_messages_tokens(prepared["messages"])
+            blocked = budget.check_before_llm_call(
+                next_prompt_tokens=prompt_tokens,
+                count_as_agent_round=False,
+            )
+            if blocked:
+                answer = blocked
+                tool_trace = []
+                budget.mark_stopped(blocked)
+                budget_exhausted = True
+                budget_reason = blocked
+                budget_snap = budget.usage_snapshot()
+            else:
+                budget.begin_llm_call(prompt_tokens)
+                answer = provider.complete(prepared["messages"])
+                budget.end_llm_call(approx_tokens_from_chars(len(answer or "")))
+                tool_trace = []
+                budget_exhausted = bool(budget.stopped_reason)
+                budget_reason = budget.stopped_reason
+                budget_snap = budget.usage_snapshot()
     except LLMError:
         raise
 
@@ -863,7 +896,10 @@ def continue_chat(
         "agent_tools": prepared.get("agent_tools", False),
         "tool_trace": tool_trace,
         "suggest_diff": prepared.get("suggest_diff", False),
-        "warning": prepared["warning"],
+        "warning": prepared["warning"] or budget_reason,
+        "budget_exhausted": budget_exhausted,
+        "budget_reason": budget_reason,
+        "budget": budget_snap,
     }
 
 
@@ -943,18 +979,32 @@ def iter_chat_sse(
         yield f"data: {_json.dumps({'type': 'done', 'response': preview, 'ai_executed': False, 'mode': 'preview', 'tool_trace': [], 'usage': {'prompt_chars': prompt_chars, 'completion_chars': len(preview), 'prompt_tokens_approx': approx_tokens_from_chars(prompt_chars), 'completion_tokens_approx': approx_tokens_from_chars(len(preview))}}, ensure_ascii=False)}\n\n"
         return
 
+    from orchestrator.services.task_budget import (
+        TaskBudget,
+        estimate_messages_tokens,
+    )
+
     parts: list[str] = []
     tool_trace: list[dict] = []
+    budget = TaskBudget.from_settings()
+    budget_exhausted = False
+    budget_reason: str | None = None
+    budget_snap: dict | None = None
     try:
         if prepared.get("agent_tools"):
             full = ""
-            for ev in iter_agent_rounds(provider, prepared["messages"]):
+            for ev in iter_agent_rounds(
+                provider, prepared["messages"], budget=budget
+            ):
                 if ev["type"] == "tool":
                     step = ev["step"]
                     tool_trace.append(step)
                     yield f"data: {_json.dumps({'type': 'tool', **step}, ensure_ascii=False)}\n\n"
                 elif ev["type"] == "final":
                     full = ev.get("text") or ""
+                    budget_exhausted = bool(ev.get("budget_exhausted"))
+                    budget_reason = ev.get("budget_reason")
+                    budget_snap = ev.get("budget")
             # Stream final as chunks for UI typing feel
             step_n = max(1, len(full) // 12) if full else 1
             for i in range(0, len(full), step_n):
@@ -962,9 +1012,30 @@ def iter_chat_sse(
                 parts.append(delta)
                 yield f"data: {_json.dumps({'type': 'token', 'text': delta}, ensure_ascii=False)}\n\n"
         else:
-            for delta in provider.complete_stream(prepared["messages"]):
-                parts.append(delta)
-                yield f"data: {_json.dumps({'type': 'token', 'text': delta}, ensure_ascii=False)}\n\n"
+            prompt_tokens = estimate_messages_tokens(prepared["messages"])
+            blocked = budget.check_before_llm_call(
+                next_prompt_tokens=prompt_tokens,
+                count_as_agent_round=False,
+            )
+            if blocked:
+                budget.mark_stopped(blocked)
+                budget_exhausted = True
+                budget_reason = blocked
+                budget_snap = budget.usage_snapshot()
+                parts.append(blocked)
+                yield f"data: {_json.dumps({'type': 'token', 'text': blocked}, ensure_ascii=False)}\n\n"
+            else:
+                budget.begin_llm_call(prompt_tokens)
+                for delta in provider.complete_stream(prepared["messages"]):
+                    parts.append(delta)
+                    yield f"data: {_json.dumps({'type': 'token', 'text': delta}, ensure_ascii=False)}\n\n"
+                full_so_far = "".join(parts)
+                budget.end_llm_call(
+                    approx_tokens_from_chars(len(full_so_far))
+                )
+                budget_exhausted = bool(budget.stopped_reason)
+                budget_reason = budget.stopped_reason
+                budget_snap = budget.usage_snapshot()
     except LLMError as exc:
         err_payload: dict = {
             "type": "error",
@@ -977,4 +1048,31 @@ def iter_chat_sse(
 
     full = "".join(parts).strip()
     completion_chars = len(full)
-    yield f"data: {_json.dumps({'type': 'done', 'response': full, 'ai_executed': True, 'mode': 'llm', 'tool_trace': tool_trace, 'usage': {'prompt_chars': prompt_chars, 'completion_chars': completion_chars, 'prompt_tokens_approx': approx_tokens_from_chars(prompt_chars), 'completion_tokens_approx': approx_tokens_from_chars(completion_chars)}}, ensure_ascii=False)}\n\n"
+    usage = {
+        "prompt_chars": prompt_chars,
+        "completion_chars": completion_chars,
+        "prompt_tokens_approx": (
+            (budget_snap or {}).get("prompt_tokens_approx")
+            if budget_snap
+            else approx_tokens_from_chars(prompt_chars)
+        ),
+        "completion_tokens_approx": (
+            (budget_snap or {}).get("completion_tokens_approx")
+            if budget_snap
+            else approx_tokens_from_chars(completion_chars)
+        ),
+    }
+    warn = prepared["warning"] or budget_reason
+    done = {
+        "type": "done",
+        "response": full,
+        "ai_executed": True,
+        "mode": "llm",
+        "tool_trace": tool_trace,
+        "usage": usage,
+        "warning": warn,
+        "budget_exhausted": budget_exhausted,
+        "budget_reason": budget_reason,
+        "budget": budget_snap,
+    }
+    yield f"data: {_json.dumps(done, ensure_ascii=False)}\n\n"
