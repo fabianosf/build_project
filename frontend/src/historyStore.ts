@@ -44,6 +44,10 @@ export type SessionTelemetry = {
   tokensApprox: number | null;
   /** True when the user picked a different specialist than auto-suggest. */
   corrected: boolean;
+  /** Prompt size before/after context policy (history+attachments). */
+  contextCharsBefore: number | null;
+  contextCharsAfter: number | null;
+  contextCompacted: boolean;
 };
 
 const STORAGE_KEY = "orquestrador.history.v2";
@@ -109,6 +113,11 @@ function normalizeSession(raw: unknown): RunSession | null {
       msRun: typeof t.msRun === "number" ? t.msRun : null,
       tokensApprox: typeof t.tokensApprox === "number" ? t.tokensApprox : null,
       corrected: Boolean(t.corrected),
+      contextCharsBefore:
+        typeof t.contextCharsBefore === "number" ? t.contextCharsBefore : null,
+      contextCharsAfter:
+        typeof t.contextCharsAfter === "number" ? t.contextCharsAfter : null,
+      contextCompacted: Boolean(t.contextCompacted),
     };
   }
   return {

@@ -238,6 +238,11 @@ export type TurnUsage = {
   completion_chars?: number;
   prompt_tokens_approx?: number;
   completion_tokens_approx?: number;
+  context_chars_before?: number | null;
+  context_chars_after?: number | null;
+  context_tokens_before?: number | null;
+  context_tokens_after?: number | null;
+  context_compacted?: boolean;
 };
 
 async function parseJson<T extends { error?: string; code?: string; retryable?: boolean }>(
@@ -387,6 +392,9 @@ export type ChatStreamHandlers = {
     warning?: string | null;
     document_recognized?: boolean;
     usage?: TurnUsage;
+    context_chars_before?: number | null;
+    context_chars_after?: number | null;
+    context_compacted?: boolean;
   }) => void;
   onTool?: (step: ToolTraceStep) => void;
   onToken?: (text: string) => void;
@@ -399,6 +407,9 @@ export type ChatStreamHandlers = {
     warning?: string | null;
     budget_exhausted?: boolean;
     budget_reason?: string | null;
+    context_chars_before?: number | null;
+    context_chars_after?: number | null;
+    context_compacted?: boolean;
   }) => void;
   onError?: (error: string, info?: { code?: string; retryable?: boolean }) => void;
 };
@@ -525,6 +536,9 @@ export async function chatContinueStream(
             agent_tools?: boolean;
             budget_exhausted?: boolean;
             budget_reason?: string | null;
+            context_chars_before?: number | null;
+            context_chars_after?: number | null;
+            context_compacted?: boolean;
           };
           if (evt.type === "meta") {
             handlers.onMeta?.({
@@ -537,6 +551,17 @@ export async function chatContinueStream(
               document_recognized: evt.document_recognized,
               agent_tools: evt.agent_tools,
               usage: evt.usage,
+              context_chars_before:
+                evt.context_chars_before ??
+                evt.usage?.context_chars_before ??
+                null,
+              context_chars_after:
+                evt.context_chars_after ??
+                evt.usage?.context_chars_after ??
+                null,
+              context_compacted: Boolean(
+                evt.context_compacted ?? evt.usage?.context_compacted,
+              ),
             });
           } else if (evt.type === "tool" && evt.name) {
             handlers.onTool?.({
@@ -559,6 +584,17 @@ export async function chatContinueStream(
               warning: evt.warning,
               budget_exhausted: evt.budget_exhausted,
               budget_reason: evt.budget_reason,
+              context_chars_before:
+                evt.context_chars_before ??
+                evt.usage?.context_chars_before ??
+                null,
+              context_chars_after:
+                evt.context_chars_after ??
+                evt.usage?.context_chars_after ??
+                null,
+              context_compacted: Boolean(
+                evt.context_compacted ?? evt.usage?.context_compacted,
+              ),
             });
           } else if (evt.type === "error") {
             handlers.onError?.(evt.error ?? "Erro no stream.", {

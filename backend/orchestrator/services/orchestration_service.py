@@ -574,7 +574,6 @@ def prepare_chat(
             meta=meta,
         )
 
-    user_content = build_user_content(msg, attach_text, image_parts)
     trunc_note = ""
     if rag_used:
         trunc_note = f"\n(Contexto via RAG: {rag_chunks} trechos do .md.)"
@@ -701,14 +700,34 @@ def prepare_chat(
         history_msgs.insert(0, {"role": role, "content": content})
         hist_chars += len(content)
 
-    messages: list[dict[str, Any]] = [
-        *system_msgs,
-        *history_msgs,
-        {"role": "user", "content": user_content},
-    ]
+    from orchestrator.services.context_compact import apply_context_policy
+
+    policy = apply_context_policy(
+        system_msgs=system_msgs,
+        history_msgs=history_msgs,
+        user_message=msg,
+        attach_text=attach_text,
+        image_parts=image_parts,
+        build_user_content=build_user_content,
+    )
+    messages = policy["messages"]
+    attach_text = policy["attach_text"]
+    history_msgs = policy["history_msgs"]
+    user_content = policy["user_content"]
+    context_chars_before = int(policy["context_chars_before"])
+    context_chars_after = int(policy["context_chars_after"])
+    context_tokens_before = int(policy["context_tokens_before"])
+    context_tokens_after = int(policy["context_tokens_after"])
+    context_compacted = bool(policy["context_compacted"])
+
     _assert_prompt_size(messages)
 
     warnings: list[str] = list(attach_warnings)
+    if context_compacted:
+        warnings.append(
+            "Contexto compactado: histórico/anexos reduzidos "
+            f"({context_chars_before}→{context_chars_after} chars)."
+        )
     if rag_used:
         warnings.append(
             f"Contexto recuperado: {rag_chunks} trechos do especialista (RAG)."
@@ -762,6 +781,11 @@ def prepare_chat(
         "attach_text": attach_text,
         "image_parts_count": len(image_parts),
         "allow_preview": allow_preview,
+        "context_chars_before": context_chars_before,
+        "context_chars_after": context_chars_after,
+        "context_tokens_before": context_tokens_before,
+        "context_tokens_after": context_tokens_after,
+        "context_compacted": context_compacted,
     }
 
 
@@ -900,6 +924,11 @@ def continue_chat(
         "budget_exhausted": budget_exhausted,
         "budget_reason": budget_reason,
         "budget": budget_snap,
+        "context_chars_before": prepared.get("context_chars_before"),
+        "context_chars_after": prepared.get("context_chars_after"),
+        "context_tokens_before": prepared.get("context_tokens_before"),
+        "context_tokens_after": prepared.get("context_tokens_after"),
+        "context_compacted": prepared.get("context_compacted", False),
     }
 
 
@@ -966,7 +995,17 @@ def iter_chat_sse(
         "usage": {
             "prompt_chars": prompt_chars,
             "prompt_tokens_approx": approx_tokens_from_chars(prompt_chars),
+            "context_chars_before": prepared.get("context_chars_before"),
+            "context_chars_after": prepared.get("context_chars_after"),
+            "context_tokens_before": prepared.get("context_tokens_before"),
+            "context_tokens_after": prepared.get("context_tokens_after"),
+            "context_compacted": prepared.get("context_compacted", False),
         },
+        "context_chars_before": prepared.get("context_chars_before"),
+        "context_chars_after": prepared.get("context_chars_after"),
+        "context_tokens_before": prepared.get("context_tokens_before"),
+        "context_tokens_after": prepared.get("context_tokens_after"),
+        "context_compacted": prepared.get("context_compacted", False),
     }
     yield f"data: {_json.dumps(meta, ensure_ascii=False)}\n\n"
 
@@ -1061,6 +1100,11 @@ def iter_chat_sse(
             if budget_snap
             else approx_tokens_from_chars(completion_chars)
         ),
+        "context_chars_before": prepared.get("context_chars_before"),
+        "context_chars_after": prepared.get("context_chars_after"),
+        "context_tokens_before": prepared.get("context_tokens_before"),
+        "context_tokens_after": prepared.get("context_tokens_after"),
+        "context_compacted": prepared.get("context_compacted", False),
     }
     warn = prepared["warning"] or budget_reason
     done = {
@@ -1074,5 +1118,10 @@ def iter_chat_sse(
         "budget_exhausted": budget_exhausted,
         "budget_reason": budget_reason,
         "budget": budget_snap,
+        "context_chars_before": prepared.get("context_chars_before"),
+        "context_chars_after": prepared.get("context_chars_after"),
+        "context_tokens_before": prepared.get("context_tokens_before"),
+        "context_tokens_after": prepared.get("context_tokens_after"),
+        "context_compacted": prepared.get("context_compacted", False),
     }
     yield f"data: {_json.dumps(done, ensure_ascii=False)}\n\n"

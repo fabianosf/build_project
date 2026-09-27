@@ -96,6 +96,10 @@ LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 LLM_MAX_PROMPT_CHARS = int(os.getenv("LLM_MAX_PROMPT_CHARS", "120000"))
 # Keep fragment context small enough for Groq free-tier TPM (~8k tokens).
 LLM_MAX_FRAGMENT_CHARS = int(os.getenv("LLM_MAX_FRAGMENT_CHARS", "8000"))
+# Soft threshold: shrink history/attachments when total prompt exceeds this.
+CONTEXT_COMPACT_THRESHOLD_CHARS = int(
+    os.getenv("CONTEXT_COMPACT_THRESHOLD_CHARS", "100000")
+)
 RAG_ENABLED = os.getenv("RAG_ENABLED", "true").strip().lower() in {
     "1",
     "true",

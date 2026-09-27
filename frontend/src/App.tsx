@@ -256,12 +256,18 @@ export default function App() {
     msSuggest: number | null;
     msRun: number | null;
     tokensApprox: number | null;
+    contextCharsBefore: number | null;
+    contextCharsAfter: number | null;
+    contextCompacted: boolean;
   }>({
     suggestedId: null,
     chosenId: null,
     msSuggest: null,
     msRun: null,
     tokensApprox: null,
+    contextCharsBefore: null,
+    contextCharsAfter: null,
+    contextCompacted: false,
   });
   const [catalogFilter, setCatalogFilter] = useState("");
 
@@ -291,7 +297,36 @@ export default function App() {
       corrected: Boolean(
         t.suggestedId && chosen && t.suggestedId !== chosen,
       ),
+      contextCharsBefore: t.contextCharsBefore,
+      contextCharsAfter: t.contextCharsAfter,
+      contextCompacted: t.contextCompacted,
     };
+  }
+
+  function recordContextTelemetry(meta: {
+    context_chars_before?: number | null;
+    context_chars_after?: number | null;
+    context_compacted?: boolean;
+    usage?: {
+      context_chars_before?: number | null;
+      context_chars_after?: number | null;
+      context_compacted?: boolean;
+    };
+  }) {
+    const before =
+      meta.context_chars_before ?? meta.usage?.context_chars_before ?? null;
+    const after =
+      meta.context_chars_after ?? meta.usage?.context_chars_after ?? null;
+    const compacted = Boolean(
+      meta.context_compacted ?? meta.usage?.context_compacted,
+    );
+    if (before != null || after != null || compacted) {
+      telemetryRef.current.contextCharsBefore =
+        typeof before === "number" ? before : null;
+      telemetryRef.current.contextCharsAfter =
+        typeof after === "number" ? after : null;
+      telemetryRef.current.contextCompacted = compacted;
+    }
   }
 
   function persistProject(messages: SessionTurn[], opts?: {
@@ -679,6 +714,7 @@ export default function App() {
               chunks: meta.rag_chunks ?? 0,
             });
             if (meta.warning) setChatWarning(meta.warning);
+            recordContextTelemetry(meta);
             setActivatedDoc({
               name: meta.fragment_name,
               filename: "",
@@ -728,6 +764,7 @@ export default function App() {
                 (payload.usage.completion_tokens_approx ?? 0);
               telemetryRef.current.tokensApprox = approx || null;
             }
+            recordContextTelemetry(payload);
             if (payload.tool_trace?.length) {
               setToolSteps(payload.tool_trace);
             }
@@ -904,6 +941,9 @@ export default function App() {
         msSuggest: Math.round(performance.now() - t0),
         msRun: null,
         tokensApprox: null,
+        contextCharsBefore: null,
+        contextCharsAfter: null,
+        contextCompacted: false,
       };
       setAskStage(null);
       setAwaitingConfirm(true);
@@ -1027,6 +1067,9 @@ export default function App() {
       msSuggest: null,
       msRun: null,
       tokensApprox: null,
+      contextCharsBefore: null,
+      contextCharsAfter: null,
+      contextCompacted: false,
     };
   }
 
@@ -1423,6 +1466,7 @@ export default function App() {
               chunks: meta.rag_chunks ?? 0,
             });
             if (meta.warning) setChatWarning(meta.warning);
+            recordContextTelemetry(meta);
           },
           onTool: (step) => {
             setToolSteps((prev) => [...prev, step]);
@@ -1453,6 +1497,7 @@ export default function App() {
                 (payload.usage.completion_tokens_approx ?? 0);
               telemetryRef.current.tokensApprox = approx || null;
             }
+            recordContextTelemetry(payload);
             if (payload.tool_trace?.length) {
               setToolSteps(payload.tool_trace);
             }
