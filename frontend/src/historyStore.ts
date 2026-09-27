@@ -97,6 +97,39 @@ function normalizeTaskTelemetry(raw: unknown): TaskTelemetry | null {
   };
 }
 
+/** True when two task metric snapshots are equal (same execution recorded twice). */
+export function telemetryTasksEqual(
+  a: TaskTelemetry,
+  b: TaskTelemetry,
+): boolean {
+  return (
+    a.suggestedId === b.suggestedId &&
+    a.chosenId === b.chosenId &&
+    a.msSuggest === b.msSuggest &&
+    a.msRun === b.msRun &&
+    a.tokensApprox === b.tokensApprox &&
+    a.corrected === b.corrected &&
+    a.contextCharsBefore === b.contextCharsBefore &&
+    a.contextCharsAfter === b.contextCharsAfter &&
+    a.contextCompacted === b.contextCompacted
+  );
+}
+
+/**
+ * Append one execution task, skipping if it matches the last run.
+ * Guards StrictMode/double persist of the same execution.
+ */
+export function appendTelemetryRun(
+  runs: TaskTelemetry[],
+  task: TaskTelemetry,
+): TaskTelemetry[] {
+  const prev = runs ?? [];
+  if (prev.length > 0 && telemetryTasksEqual(prev[prev.length - 1], task)) {
+    return prev;
+  }
+  return [...prev, task].slice(-MAX_TELEMETRY_RUNS);
+}
+
 function normalizeTelemetryRuns(item: Record<string, unknown>): TaskTelemetry[] {
   const runs: TaskTelemetry[] = [];
   if (Array.isArray(item.telemetryRuns)) {
@@ -278,9 +311,7 @@ export function saveSession(input: SaveSessionInput): RunSession {
     telemetryRuns = [existing.telemetry];
   }
   if (input.appendTelemetry) {
-    telemetryRuns = [...telemetryRuns, input.appendTelemetry].slice(
-      -MAX_TELEMETRY_RUNS,
-    );
+    telemetryRuns = appendTelemetryRun(telemetryRuns, input.appendTelemetry);
   }
 
   const telemetry =

@@ -787,6 +787,9 @@ export default function App() {
             const budgetWarn =
               payload.budget_reason || payload.warning || null;
             if (budgetWarn) setChatWarning(budgetWarn);
+            // Persist outside the updater: StrictMode can double-invoke setState
+            // updaters and would otherwise append the same task twice.
+            let nextForPersist: SessionTurn[] | null = null;
             setChatMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -796,7 +799,11 @@ export default function App() {
                   content: payload.response || last.content,
                 };
               }
-              persistProject(next, {
+              nextForPersist = next;
+              return next;
+            });
+            if (nextForPersist) {
+              persistProject(nextForPersist, {
                 response: payload.response,
                 runMode: payload.mode as "preview" | "llm",
                 aiExecuted: payload.ai_executed,
@@ -804,8 +811,7 @@ export default function App() {
                 documentRecognized: true,
                 recordTask: true,
               });
-              return next;
-            });
+            }
             setRunResult((prev) =>
               prev
                 ? {
@@ -1534,6 +1540,7 @@ export default function App() {
             const budgetWarn =
               payload.budget_reason || payload.warning || null;
             if (budgetWarn) setChatWarning(budgetWarn);
+            let nextForPersist: SessionTurn[] | null = null;
             setChatMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -1543,15 +1550,18 @@ export default function App() {
                   content: payload.response,
                 };
               }
-              persistProject(next, {
+              nextForPersist = next;
+              return next;
+            });
+            if (nextForPersist) {
+              persistProject(nextForPersist, {
                 response: payload.response,
                 runMode: payload.mode as "preview" | "llm",
                 aiExecuted: payload.ai_executed,
                 attachmentNames: attachmentsPayload.map((a) => a.name),
                 recordTask: true,
               });
-              return next;
-            });
+            }
             queueMicrotask(() =>
               chatEndRef.current?.scrollIntoView({ behavior: "smooth" }),
             );
